@@ -1,130 +1,142 @@
-# AI智能黑格尔逻辑学对话机（知识库可视化版）
+# Hegelian-dialectics
 
-这个项目基于你提供的《黑格尔的逻辑学》文本，并可接入 `hegel-books` 目录全部资料，做成了可视化可维护系统：
+一个基于黑格尔辩证法（结合齐泽克式问题拆解方向）的 AI 对话系统。  
+项目聚焦三件事：**提问分析、知识库检索、可执行行动计划**。
 
-- 用户输入生活问题
-- 系统识别问题所属黑格尔逻辑环节
-- 输出正题/反题/矛盾/扬弃/下一环节/执行步骤
-- 同时检索资料库原文片段作为依据
-- 支持资料上传、启用/禁用、移除、删除、重建索引
+---
 
-## 1. 快速运行
+## 1. 项目结构
 
-要求：`Python 3.10+`
+```text
+E:\hegel-logic
+├─ app_streamlit.py                 # Web UI（对话分析 + 资料库管理）
+├─ hegel_engine.py                  # 辩证分析引擎（流式调用、长度控制、缓存）
+├─ knowledge_base.py                # 资料库索引与检索（抽取、分块、混合检索）
+├─ hegel_dialogue_machine.py        # 命令行版（备用）
+├─ start-hegel-app.ps1              # PowerShell 一键启动主逻辑
+├─ 一键启动-黑格尔对话机.bat         # Windows 启动入口
+├─ requirements.txt                 # 运行依赖
+├─ data/                            # 本地运行数据（索引、缓存、UI 历史）
+├─ uploads/                         # 用户上传资料
+└─ hegel-books/                     # 本地原始资料库（已被 gitignore 排除）
+```
 
-### 一键启动（推荐）
+---
 
-直接双击项目根目录下：
+## 2. 全部技术栈（按层说明）
+
+### 2.1 运行与语言
+- **Python 3.10+**：核心语言
+- **PowerShell + Batch**：Windows 一键启动与环境探测
+
+### 2.2 前端交互层
+- **Streamlit**
+  - 表单输入（问题、API 配置）
+  - 结果卡片展示
+  - 资料库管理（同步、上传、启用/删除、重建索引）
+  - 流式输出增量显示
+
+### 2.3 核心引擎层（`hegel_engine.py`）
+- **辩证分析框架**：阶段检测、提示词构建、结果结构化
+- **OpenAI 兼容 API 调用**
+  - 非流式 JSON 调用
+  - SSE 流式调用（Streaming）
+  - 超时/重试/错误回退
+- **输出后处理**
+  - 乱码修复（mojibake repair）
+  - 字数与结构控制
+  - 证据字段标准化
+- **本地结果缓存**
+  - 分析结果缓存键（问题 + 模式 + 模型 + 片段）
+  - 缓存清理入口
+
+### 2.4 知识库与检索层（`knowledge_base.py`）
+- **多格式文本抽取**：`.epub / .docx / .txt / .md`
+- **编码鲁棒性**
+  - UTF-8/GBK/GB18030/BIG5 自动解码兜底
+  - 乱码修复
+- **索引构建**
+  - 文本分块（chunk）
+  - 索引存储到 `data/index.json`
+  - 内存索引缓存（按 mtime 自动失效）
+- **检索策略**
+  - 关键词预筛
+  - 轻量语义近似打分（bigrams + Jaccard）
+  - Rerank TopK
+  - Small-to-Big 上下文扩展
+
+### 2.5 数据与状态层
+- **JSON 本地存储**
+  - `data/index.json`（检索索引）
+  - `data/analysis_cache.json`（分析缓存）
+  - `data/ui_history.json`（API 历史与提问历史）
+- **Git 忽略策略**
+  - `data/`、`uploads/`、`hegel-books/` 不进仓库
+
+### 2.6 网络与依赖
+- **requests**：HTTP 调用模型接口
+- **streamlit**：Web UI
+
+---
+
+## 3. 核心能力
+
+1. 用户输入生活问题，系统进行辩证拆解。  
+2. 从本地资料库检索最相关片段并生成启发证据。  
+3. 输出结构化结果（正题、反题、矛盾、合题、下一环节、执行计划）。  
+4. 支持流式展示与规则回退，保证可用性。  
+5. 支持资料库维护与索引重建。
+
+---
+
+## 4. 快速运行
+
+### 方式 A：一键启动（推荐，Windows）
+双击：
 
 - `一键启动-黑格尔对话机.bat`
 
-它会自动：
+启动器会自动检查：
+- Python / pip
+- 依赖
+- 8501 端口
+- Streamlit 启动
 
-- 检查 Python / pip
-- 安装依赖
-- 检查 8501 端口
-- 启动 Web 界面并打开浏览器
-
-说明：
-
-- `.bat` 只是启动入口，实际逻辑在 `start-hegel-app.ps1`，这样可以显著减少中文乱码问题。
-- 启动器已支持 conda：
-  - 若当前已激活非 `base` 环境，直接使用当前环境
-  - 若当前是 `base` 或未激活环境，优先尝试 `hegel` 环境
-  - 可通过环境变量 `HEGEL_CONDA_ENV` 指定环境名
-
-在项目目录执行：
+### 方式 B：命令行启动
 
 ```bash
-chcp 65001
 pip install -r requirements.txt
 streamlit run app_streamlit.py
 ```
 
-浏览器打开后，你会看到两个页面：
+---
 
-- `对话分析`：输入问题，获得辩证拆解与行动计划
-- `资料库管理`：同步 `hegel-books`、上传新资料、增删启用资料、重建索引
-
-## 1.1 AI API 增强（推荐）
-
-在 `对话分析` 页面可填写：
-
-- API Base URL（OpenAI 兼容接口）
-- Endpoint ID（模型可调用 ID）
-- API Key
-
-填写后，系统会进入“AI 增强分析模式”：
-
-- 先从资料库召回候选片段
-- 再由 AI 识别“最能启发当前问题”的证据
-- 输出更贴合用户问题的矛盾、扬弃方向与步骤
-
-## 2. 资料接入与动态增删
-
-- 默认会从 `hegel-books` 扫描并接入：`.epub / .txt / .md / .docx`
-- 可手动上传新文档进入 `uploads` 并纳入清单
-- 每个文档可：
-  - 启用（参与问答检索）
-  - 移除清单（不删文件）
-  - 删除文件（从磁盘删除）
-- 每次变更后可一键“重建索引”
-
-## 3. 输出结构（固定）
-
-每次分析固定输出：
-
-每次输出固定包含：
-
-1. 所处逻辑环节
-2. 正题
-3. 反题
-4. 主要矛盾
-5. 扬弃方向
-6. 下一环节
-7. 3步行动计划
-8. 能给予启发的相关原文证据片段（可引用或概括转述）
-
-## 4. 项目文件说明
-
-- `app_streamlit.py`：可视化界面
-- `knowledge_base.py`：资料清单、文本抽取、分块、索引、检索
-- `hegel_engine.py`：黑格尔环节映射与问题分析
-## 6. 性能与并行配置（可选）
-
-可通过环境变量调优（Windows PowerShell 示例）：
+## 5. 可调环境变量（性能/稳定性）
 
 ```powershell
 $env:HEGEL_LLM_READ_TIMEOUT="180"
 $env:HEGEL_LLM_MAX_RETRIES="2"
 $env:HEGEL_LLM_MAX_TOKENS="1600"
-```
-
-轻量模型路由（用于“总结/摘要/归纳”类任务）：
-
-```powershell
 $env:HEGEL_ENABLE_LIGHT_ROUTER="1"
 $env:HEGEL_LIGHT_MODEL="gemma-3-4b-it"
-```
-
-KV Cache 提示（仅当你的网关/模型兼容该参数时生效）：
-
-```powershell
 $env:HEGEL_KV_CACHE_ENABLED="1"
+$env:HEGEL_ANALYSIS_CACHE_LIMIT="80"
 ```
 
-说明：
-- 项目已实现混合检索（关键词预筛 + 语义近似）、Rerank Top3、Small-to-Big 上下文扩展。
-- 已支持 Streaming 流式输出与输入阶段预取检索（Pre-fetch）。
-- `hegel_engine.py` 提供 `summarize_documents_parallel()`，可并行总结多文档再汇总。
-- `hegel_dialogue_machine.py`：命令行版本（可保留备用）
+---
 
-## 5. 落地使用建议
+## 6. 安全与仓库策略
 
-给普通用户时，建议按 7 天循环：
+- 仓库只包含代码，不包含资料库原文与本地历史数据。  
+- 已通过 `.gitignore` 排除：
+  - `hegel-books/`
+  - `data/`
+  - `uploads/`
+  - `doc_extracted.txt`
+  - `__pycache__/`
 
-- 第 1 天：输入问题，得到矛盾与计划
-- 第 2-6 天：执行计划并记录反馈
-- 第 7 天：把执行结果再次输入系统，生成下一轮扬弃
+---
 
-这样就把黑格尔逻辑从“哲学阅读”变成“可迭代的问题解决系统”。
+## 7. 许可证
+
+当前仓库未附带 license；如需开源发布，建议补充 MIT / Apache-2.0。
