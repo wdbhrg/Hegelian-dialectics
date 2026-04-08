@@ -1,4 +1,5 @@
 @echo off
+:: Only stages the three launcher files below — never data/, uploads/, caches, or IDE history.
 setlocal EnableExtensions
 cd /d "%~dp0"
 
