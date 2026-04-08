@@ -27,11 +27,18 @@ def _env_int(key: str, default: int, *, min_v: Optional[int] = None, max_v: Opti
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    raw = os.environ.get(key, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 # 快速分析：压缩输入/输出 token；HTTP 等待时间与模型/线路有关（方舟常需数十秒以上）
-FAST_SEARCH_TOP_K = 12
-FAST_MAX_CHUNKS = 4
-FAST_CHARS_PER_CHUNK = 220
-FAST_TOTAL_CHARS = 880
+FAST_SEARCH_TOP_K = _env_int("HEGEL_SEARCH_TOP_K", 10, min_v=4, max_v=24)
+FAST_MAX_CHUNKS = _env_int("HEGEL_FAST_MAX_CHUNKS", 3, min_v=2, max_v=6)
+FAST_CHARS_PER_CHUNK = _env_int("HEGEL_FAST_CHARS_PER_CHUNK", 180, min_v=100, max_v=500)
+FAST_TOTAL_CHARS = _env_int("HEGEL_FAST_TOTAL_CHARS", 680, min_v=300, max_v=2200)
 FAST_RETRY_CHUNKS = 2
 FAST_RETRY_CHARS = 120
 FAST_RETRY_TOTAL = 320
@@ -39,7 +46,10 @@ FAST_RETRY_TOTAL = 320
 LLM_CONNECT_TIMEOUT_S = _env_int("HEGEL_LLM_CONNECT_TIMEOUT", 15, min_v=5, max_v=120)
 LLM_READ_TIMEOUT_S = _env_int("HEGEL_LLM_READ_TIMEOUT", 120, min_v=30, max_v=600)
 LLM_MAX_RETRIES = _env_int("HEGEL_LLM_MAX_RETRIES", 2, min_v=0, max_v=8)
+LLM_RETRY_BACKOFF_S = _env_int("HEGEL_LLM_RETRY_BACKOFF", 2, min_v=1, max_v=20)
 LLM_MAX_TOKENS = _env_int("HEGEL_LLM_MAX_TOKENS", 1600, min_v=256, max_v=8192)
+EVIDENCE_TARGET_COUNT = _env_int("HEGEL_EVIDENCE_COUNT", 6, min_v=2, max_v=10)
+ENABLE_STREAM_PRIMARY = _env_bool("HEGEL_STREAM_PRIMARY", False)
 LIGHT_MODEL = os.environ.get("HEGEL_LIGHT_MODEL", "").strip()
 ENABLE_LIGHT_ROUTER = os.environ.get("HEGEL_ENABLE_LIGHT_ROUTER", "1").strip().lower() in {"1", "true", "yes"}
 ENABLE_KV_CACHE_HINT = os.environ.get("HEGEL_KV_CACHE_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
@@ -203,6 +213,7 @@ def _build_prompt(
     lvl = (detail_level or "standard").lower()
     if lvl == "concise":
         lens = {
+            "stage_explain": "140-220字",
             "thesis": "80-120字",
             "antithesis": "80-120字",
             "false_syn": "100-140字",
@@ -213,6 +224,7 @@ def _build_prompt(
         }
     elif lvl == "detailed":
         lens = {
+            "stage_explain": "260-420字",
             "thesis": "120-180字",
             "antithesis": "120-180字",
             "false_syn": "150-220字",
@@ -223,6 +235,7 @@ def _build_prompt(
         }
     else:
         lens = {
+            "stage_explain": "180-300字",
             "thesis": "100-150字",
             "antithesis": "100-150字",
             "false_syn": "130-190字",
@@ -250,19 +263,28 @@ def _build_prompt(
     {{"chunk_id":"与候选一致", "doc_path":"与候选一致", "insight":"一句", "quote":"同上"}}
   ],
   "stage_override": "",
+  "stage_explain_refine": "所处逻辑环节的通俗讲解（必须结合用户问题，按正题-反题-矛盾-扬弃展开），{lens['stage_explain']}",
   "thesis_refine": "正题，{lens['thesis']}",
   "antithesis_refine": "反题，{lens['antithesis']}",
   "false_synthesis_refine": "虚假合题，{lens['false_syn']}",
   "true_synthesis_refine": "真正合题，{lens['true_syn']}",
   "contradiction_refine": "核心矛盾，{lens['contradiction']}",
   "next_stage_refine": "下一环节，{lens['next_stage']}",
-  "steps_refine": ["可执行一步", "可执行一步", "可执行一步"]
+  "steps_refine": [
+    "可执行一步",
+    "可执行一步",
+    "可执行一步",
+    "可执行一步"
+  ]
 }}
 
 规则：
-1) inspiring_evidence 恰好 2 条；quote 须结合用户问题与片段。
+1) inspiring_evidence 先给2-3条最相关内容即可（系统会自动补齐到展示数量）；quote 须结合用户问题与片段。
 2) 每个字段都要有信息量，但尽量短、直接、可解析。
-3) steps_refine 至少3步，每步20字以上。
+3) steps_refine 先给4-6步高质量草稿即可（系统会自动补齐到10步），每步20字以上。
+4) 文风要通俗、有人味，像在和真实用户对话，不要“自言自语式”分析。
+5) thesis_refine / antithesis_refine / false_synthesis_refine / true_synthesis_refine / contradiction_refine / next_stage_refine 中，禁止原样复述用户问题原句，必须转述表达。
+6) stage_explain_refine 不能一句话了事，必须把“为什么是这个环节”讲清楚，并给出缓解当前冲突的扬弃方向。
 """.strip()
 
 
@@ -478,6 +500,56 @@ def _normalize_inspiring_evidence_length(
     return normalized
 
 
+def _ensure_evidence_count(
+    evidence: List[Dict[str, object]],
+    candidate_chunks: List[Dict[str, str]],
+    *,
+    user_question: str,
+    detail_level: str,
+    target_count: int = EVIDENCE_TARGET_COUNT,
+) -> List[Dict[str, object]]:
+    """将证据条数补齐到目标数量，并统一做长度/语气规范。"""
+    target = max(2, int(target_count))
+    base: List[Dict[str, object]] = []
+    used_ids: set[str] = set()
+
+    for item in (evidence or []):
+        if not isinstance(item, dict):
+            continue
+        row = dict(item)
+        cid = str(row.get("chunk_id", "")).strip()
+        if cid:
+            used_ids.add(cid)
+        base.append(row)
+        if len(base) >= target:
+            break
+
+    if len(base) < target:
+        for ch in candidate_chunks:
+            cid = str(ch.get("chunk_id", "")).strip()
+            if cid and cid in used_ids:
+                continue
+            base.append(
+                {
+                    "chunk_id": cid,
+                    "doc_path": str(ch.get("doc_path", "")),
+                    "insight": "这段材料能补上你当前问题里容易被忽略的一环，帮助你把“触发-反应-后果”的链条看完整。",
+                    "quote": "",
+                }
+            )
+            if cid:
+                used_ids.add(cid)
+            if len(base) >= target:
+                break
+
+    return _normalize_inspiring_evidence_length(
+        base[:target],
+        candidate_chunks,
+        user_question=user_question,
+        detail_level=detail_level,
+    )
+
+
 def _call_llm_json(
     prompt: str,
     api_key: str,
@@ -498,6 +570,8 @@ def _call_llm_json(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
+        # 避免部分网关在 keep-alive 复用连接时触发 TLS EOF 中断
+        "Connection": "close",
     }
     # Cherry Studio style OpenAI-compatible payload
     payload = {
@@ -523,11 +597,17 @@ def _call_llm_json(
                 timeout=(LLM_CONNECT_TIMEOUT_S, timeout_s),
             )
             break
-        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout) as ex:
+        except (
+            requests.exceptions.ReadTimeout,
+            requests.exceptions.ConnectTimeout,
+            requests.exceptions.SSLError,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.ChunkedEncodingError,
+        ) as ex:
             last_error = ex
             if attempt >= max_retries:
                 raise RuntimeError(f"Request timeout after retries: {ex}") from ex
-            time.sleep(2.0 * (attempt + 1))
+            time.sleep(float(LLM_RETRY_BACKOFF_S) * (attempt + 1))
     else:
         if last_error:
             raise RuntimeError(f"Request failed: {last_error}") from last_error
@@ -566,15 +646,53 @@ def _call_llm_json(
         content = content.strip("`")
         if content.startswith("json"):
             content = content[4:].strip()
-    try:
-        parsed = json.loads(content)
-        return _repair_ai_payload(parsed) if isinstance(parsed, dict) else None
-    except json.JSONDecodeError:
-        start = content.find("{")
-        end = content.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            parsed = json.loads(content[start : end + 1])
-            return _repair_ai_payload(parsed) if isinstance(parsed, dict) else None
+    return _try_parse_json_object(content)
+
+
+def _try_parse_json_object(content: str) -> Optional[Dict[str, object]]:
+    """
+    尝试从模型文本中解析 JSON 对象，并对常见格式问题做轻量修复：
+    - 尾逗号
+    - 对象字段之间漏逗号（上一字段以 ] / } / " 结束）
+    """
+    text = str(content or "").strip()
+    if not text:
+        return None
+
+    candidates: List[str] = []
+    candidates.append(text)
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidates.append(text[start : end + 1])
+
+    def _variants(s: str) -> List[str]:
+        s1 = s
+        # 去尾逗号: {"a":1,} / [1,2,]
+        s2 = re.sub(r",\s*([}\]])", r"\1", s1)
+        # 对象字段缺逗号: ..."}  "next":...
+        s3 = re.sub(r'([}\]"])\s*(\n\s*"[^"\n]+"\s*:)', r"\1,\2", s2)
+        s4 = re.sub(r'([}\]"])\s+("([^"\n]|\\")+"\s*:)', r"\1, \2", s3)
+        out = [s1, s2, s3, s4]
+        uniq: List[str] = []
+        seen = set()
+        for x in out:
+            if x not in seen:
+                seen.add(x)
+                uniq.append(x)
+        return uniq
+
+    for cand in candidates:
+        for v in _variants(cand):
+            try:
+                loaded = json.loads(v)
+                if isinstance(loaded, dict):
+                    return _repair_ai_payload(loaded)
+            except json.JSONDecodeError:
+                continue
+            except Exception:
+                continue
     return None
 
 
@@ -593,6 +711,7 @@ def _call_llm_json_stream(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "Accept": "application/json",
+        "Connection": "close",
     }
     payload = {
         "model": runtime_model,
@@ -656,18 +775,7 @@ def _call_llm_json_stream(
             content = content.strip("`")
             if content.startswith("json"):
                 content = content[4:].strip()
-        parsed: Optional[Dict[str, object]] = None
-        try:
-            loaded = json.loads(content)
-            if isinstance(loaded, dict):
-                parsed = _repair_ai_payload(loaded)
-        except json.JSONDecodeError:
-            start = content.find("{")
-            end = content.rfind("}")
-            if start != -1 and end != -1 and end > start:
-                loaded = json.loads(content[start : end + 1])
-                if isinstance(loaded, dict):
-                    parsed = _repair_ai_payload(loaded)
+        parsed: Optional[Dict[str, object]] = _try_parse_json_object(content)
         return parsed or {}
 
 
@@ -686,28 +794,117 @@ def _expand_to_min_len(text: str, min_chars: int, label: str, context: str = "")
         return base
 
     ctx = context[:160] if context else "用户当前处境"
-    continuation = (
-        f"围绕“{label}”去理解现实处境时，关键不在于给出一个抽象判断，而在于把{ctx}中的具体冲突串联成可解释的过程："
-        "先看它如何在目标、资源与节奏之间形成长期拉扯，再看这种拉扯怎样在情绪和执行层面不断累积，最后看哪些条件一旦被调整就能让局面出现可验证的变化。"
-        "当分析从静态结论转向动态过程后，很多看似互斥的选择会被重新组织为可协调的路径，行动也就不再依赖短时冲动，而是能通过小步试错与持续复盘逐步稳定下来。"
-        "这种写法的重点是让判断、依据与行动彼此闭环，使文本既能解释为什么会这样，也能回答下一步该如何做。"
-    )
+    if "正题" in label:
+        continuation = (
+            f"围绕“正题”，先把你当下必须守住的底线摆在台面上：在{ctx}这种局面里，"
+            "先稳住生存、任务与基本秩序，本身就是合理优先级。"
+            "这不是保守，而是给后续改变保留行动能力。"
+            "正题要回答的是“此刻最不能丢的是什么”，把这个锚点钉住后，焦虑会先下降一截，执行才有抓手。"
+        )
+        tail = "可先做一个最小保底动作：今天只完成一件最关键的小任务，用“先稳住”替代“全做完”。"
+    elif "反题" in label:
+        continuation = (
+            f"围绕“反题”，要看到另一股同样真实的力量：你不是不努力，而是身体和情绪在对{ctx}发出代价信号。"
+            "反题不是跟正题作对，而是在提醒“继续同样方式会失衡”。"
+            "它的价值是迫使你承认边界、调整节奏，否则系统会用更激烈的方式让你停下。"
+        )
+        tail = "可以把反题转成一句提醒语：当出现透支征兆时，立刻降档，而不是继续硬顶。"
+    elif "虚假" in label:
+        continuation = (
+            "“虚假的合题”通常表现为表面两边都照顾，实际两边都恶化。"
+            "比如口头上说要平衡，执行上却继续透支；短期看像在前进，长期看是在透支未来。"
+            "这类方案的问题不在态度，而在结构：没有改机制，只是在旧轨道上加意志。"
+        )
+        tail = "判断标准很简单：如果三天后更乱更累，这就是虚假合题，应立即停用。"
+    elif "真正" in label:
+        continuation = (
+            "“真正的合题”不是折中平均，而是升级结构：把必须完成的任务和身体可承受的节奏同时纳入同一套方案。"
+            "它保留了正题的现实性，也吸收了反题的边界提醒，最后形成可持续执行的路径。"
+            "核心是可重复，而不是某一天爆发式表现。"
+        )
+        tail = "合题是否成立，看两点：任务推进是否变稳、身心负担是否下降。两者缺一不可。"
+    elif "主要矛盾" in label:
+        continuation = (
+            "“主要矛盾”要抓的是最能牵动全局的冲突，而不是所有问题都一起解决。"
+            "你现在最关键的冲突，多半是“高压目标”与“恢复能力不足”之间的剪刀差。"
+            "不先处理这个，其他技巧都会被拖垮。先抓主矛盾，等于先拧对总开关。"
+        )
+        tail = "先把次要矛盾放一放，集中一周只改主矛盾相关动作，观察是否出现连锁改善。"
+    elif "下一环节" in label:
+        continuation = (
+            "“下一环节”不是重新立大目标，而是把当前分析落到下一步可验证动作。"
+            "它强调顺序：先做能稳定系统的小动作，再逐步加难度。"
+            "只要下一环节设计得对，你会看到“可持续的小胜利”，而不是靠爆发维持。"
+        )
+        tail = "下一步请写成“何时-何地-做什么-做到什么程度算完成”，避免抽象口号。"
+    elif "启发点" in label:
+        continuation = (
+            "你先别急着自责，先把最近一次失控拆开看：当时发生了什么、你脑子里冒出什么念头、接着做了什么。"
+            "把这三步连起来，你就能看见自己不是“突然崩掉”，而是被一条固定链路推着走。"
+            "一旦看清这条链路，你就能在第二步截断它：把“我完了”换成“我先做最小动作”。"
+            "这个方法不只解决这一次，下一次类似压力来时也能复用。"
+        )
+        tail = "现在就写下一句个人规则：一旦压力上头，我先做5分钟最小动作，再决定要不要继续。"
+    elif "通俗化重构参考内容" in label:
+        continuation = (
+            "说人话就是：你现在总在两个极端里来回摆——要么把自己逼到透支，要么一下子彻底放飞。"
+            "问题不在你意志差，而在节奏设计错了：没有中间档。"
+            "你真正需要的不是“永远完美自律”，而是给每天安排一个能完成的中间档，既推进正事，也留出恢复空间。"
+            "当你连续几天都能跑在中间档上，恶性循环就会慢慢断开。"
+        )
+        tail = "今天就定一个中间档动作：在固定时间做25分钟正事，结束后休息10分钟，然后只加做一轮。"
+    else:
+        continuation = (
+            f"围绕“{label}”看{ctx}，先把现状、限制和可动空间拆开，再决定先动哪里。"
+            "目标不是一次解决全部问题，而是先找到最小可行改变。"
+        )
+        tail = "当你能持续执行小步动作时，整体局面会比“偶尔爆发一次”更快变好。"
 
     out = (base + " " + continuation).strip() if base else continuation
     if len(out) < min_chars:
-        tail = (
-            "继续沿着同一逻辑推进时，需要把每一次执行反馈纳入下一轮判断中，逐步筛出真正有效的动作，"
-            "并把无效动作及时剔除，这样才能把阶段性的改善转化为可持续的结构性改进。"
-        )
         out = (out + " " + tail).strip()
 
-    return out[: max(min_chars + 120, min_chars)].strip()
+    # 强制达标：直到满足最小字数，不再出现“看起来补了但仍不足”的情况
+    booster = (
+        f"继续围绕“{label}”推进时，把动作拆小、把反馈前移：每天只验证一个可执行动作，"
+        "用结果决定下一步，而不是靠情绪决定方向。"
+    )
+    guard = 0
+    while len(out) < min_chars and guard < 20:
+        out = (out + " " + booster).strip()
+        guard += 1
+
+    # 给一点弹性上限，避免无限膨胀
+    max_len = max(min_chars + 180, min_chars)
+    return out[:max_len].strip()
+
+
+def _default_stage_explanation(
+    user_question: str,
+    stage_name: str,
+    thesis: str,
+    antithesis: str,
+    contradiction: str,
+    next_stage: str,
+) -> str:
+    ctx = re.sub(r"\s+", " ", (user_question or "").strip())
+    if len(ctx) > 180:
+        ctx = ctx[:180].rstrip() + "..."
+    return (
+        f"你当前落在“{stage_name}”这个环节，说明问题已经不是“知道或不知道”，而是“哪种力量在主导你的现实”。"
+        f"从辩证法看，你一边被“{thesis}”推动，另一边又被“{antithesis}”牵制，"
+        "两者同时成立，所以会出现反复、拉扯、时好时坏。"
+        f"这不是失败，而是阶段特征；真正需要处理的是：{contradiction}。"
+        "这个环节的任务不是立刻完美，而是把冲突变成可操作顺序：先找最低成本的稳定动作，再逐步提升。"
+        f"当你能连续执行并看到反馈，扬弃才会发生，系统也会自然过渡到“{next_stage}”。"
+    )
 
 
 def _level_minlens(detail_level: str) -> Dict[str, int]:
     lvl = (detail_level or "standard").lower()
     if lvl == "concise":
         return {
+            "stage_explain": 420,
             "thesis": 300,
             "antithesis": 300,
             "false": 420,
@@ -718,6 +915,7 @@ def _level_minlens(detail_level: str) -> Dict[str, int]:
         }
     if lvl == "detailed":
         return {
+            "stage_explain": 980,
             "thesis": 760,
             "antithesis": 760,
             "false": 980,
@@ -727,6 +925,7 @@ def _level_minlens(detail_level: str) -> Dict[str, int]:
             "step": 140,
         }
     return {
+        "stage_explain": 700,
         "thesis": 520,
         "antithesis": 520,
         "false": 700,
@@ -737,8 +936,59 @@ def _level_minlens(detail_level: str) -> Dict[str, int]:
     }
 
 
+def _strip_user_verbatim(text: str, user_question: str) -> str:
+    """移除对用户问题的原句复述，保留语义并要求后续转述。"""
+    out = str(text or "")
+    q = re.sub(r"\s+", " ", str(user_question or "").strip())
+    if not q:
+        return out
+    # 精确命中：直接替换为转述提示短语，避免原句出现在关键字段。
+    if q in out:
+        out = out.replace(q, "你的这段处境")
+    # 去掉较长子串复述（长度>=14），防止“复制半句”。
+    compact_q = re.sub(r"\s+", "", q)
+    compact_out = re.sub(r"\s+", "", out)
+    if len(compact_q) >= 28 and compact_q[:14] in compact_out:
+        out = out.replace(q[:14], "这类处境")
+    return out
+
+
+def _ensure_min_steps(
+    steps: List[str],
+    *,
+    min_count: int,
+    user_question: str,
+    stage_name: str = "",
+) -> List[str]:
+    out = [str(s).strip() for s in (steps or []) if str(s).strip()]
+    i = len(out) + 1
+    while len(out) < min_count:
+        out.append(
+            (
+                f"第{i}步：围绕当前“{stage_name or '扬弃推进'}”做一次最小闭环——先设定今天一个可完成的小目标，"
+                "执行后立刻记录结果与阻碍，再据此调整明天动作，避免只靠意志硬扛。"
+            )
+        )
+        i += 1
+    return out
+
+
 def _enforce_result_minimums(result: Dict[str, object], detail_level: str, user_question: str) -> Dict[str, object]:
     minlens = _level_minlens(detail_level)
+    stage_name = str(result.get("stage", "")).strip()
+    stage_explain = str(result.get("stage_explanation", "")).strip()
+    if not stage_explain:
+        stage_explain = _default_stage_explanation(
+            user_question=user_question,
+            stage_name=stage_name,
+            thesis=str(result.get("thesis", "")),
+            antithesis=str(result.get("antithesis", "")),
+            contradiction=str(result.get("contradiction", "")),
+            next_stage=str(result.get("next_stage", "")),
+        )
+    result["stage_explanation"] = _expand_to_min_len(
+        stage_explain, minlens["stage_explain"], "所处逻辑环节", user_question
+    )
     result["thesis"] = _expand_to_min_len(str(result.get("thesis", "")), minlens["thesis"], "正题", user_question)
     result["antithesis"] = _expand_to_min_len(
         str(result.get("antithesis", "")), minlens["antithesis"], "反题", user_question
@@ -755,13 +1005,104 @@ def _enforce_result_minimums(result: Dict[str, object], detail_level: str, user_
     result["next_stage"] = _expand_to_min_len(
         str(result.get("next_stage", "")), minlens["next"], "下一环节", user_question
     )
+    # 关键论证字段：禁止出现用户提问原句，统一转述。
+    for k in ("thesis", "antithesis", "false_synthesis", "true_synthesis", "contradiction", "next_stage"):
+        result[k] = _strip_user_verbatim(str(result.get(k, "")), user_question)
+    result["stage_explanation"] = _strip_user_verbatim(str(result.get("stage_explanation", "")), user_question)
 
     steps = result.get("steps")
     if isinstance(steps, list):
         out_steps: List[str] = []
-        for i, s in enumerate(steps[:5], start=1):
+        padded_steps = _ensure_min_steps(
+            [str(s) for s in steps],
+            min_count=10,
+            user_question=user_question,
+            stage_name=stage_name,
+        )
+        for i, s in enumerate(padded_steps[:10], start=1):
             out_steps.append(_expand_to_min_len(str(s), minlens["step"], f"步骤{i}", user_question))
         result["steps"] = out_steps
+    else:
+        padded_steps = _ensure_min_steps(
+            [],
+            min_count=10,
+            user_question=user_question,
+            stage_name=stage_name,
+        )
+        result["steps"] = [
+            _expand_to_min_len(str(s), minlens["step"], f"步骤{i}", user_question)
+            for i, s in enumerate(padded_steps, start=1)
+        ]
+    return result
+
+
+def _norm_cmp_text(s: str) -> str:
+    return re.sub(r"\s+", "", str(s or "")).strip().lower()
+
+
+def _ensure_unique_outputs(result: Dict[str, object]) -> Dict[str, object]:
+    """
+    约束关键输出“两两不重复”：
+    - 所处逻辑环节（讲解）
+    - 正题 / 反题 / 虚假合题 / 真正合题 / 主要矛盾 / 下一环节
+    - 启发点 / 通俗化重构参考内容（每条证据）
+    """
+    used: set[str] = set()
+
+    def _uniquify(text: str, label: str, fallback_seed: str = "") -> str:
+        t = str(text or "").strip()
+        base_norm = _norm_cmp_text(t)
+        if not t:
+            t = f"{label}：{fallback_seed or '此处需给出与其他栏目不同的解释与行动含义。'}"
+            base_norm = _norm_cmp_text(t)
+        if base_norm and base_norm not in used:
+            used.add(base_norm)
+            return t
+
+        # 若重复，追加“角色差异句”，并按次数递增，确保最终唯一
+        i = 2
+        while True:
+            cand = (
+                f"{t}（补充视角{i-1}：这一栏强调的是“{label}”的独立作用，"
+                "不与其他栏目重复表达。）"
+            )
+            n = _norm_cmp_text(cand)
+            if n not in used:
+                used.add(n)
+                return cand
+            i += 1
+
+    # 1) 顶层关键栏目
+    key_map = [
+        ("stage_explanation", "所处逻辑环节"),
+        ("thesis", "正题"),
+        ("antithesis", "反题"),
+        ("false_synthesis", "虚假的合题"),
+        ("true_synthesis", "真正的合题"),
+        ("contradiction", "主要矛盾"),
+        ("next_stage", "下一环节"),
+    ]
+    for k, label in key_map:
+        result[k] = _uniquify(str(result.get(k, "")), label, fallback_seed=str(result.get("stage", "")))
+
+    # 2) 证据区：启发点 / 通俗化重构参考内容
+    ev = result.get("inspiring_evidence")
+    if isinstance(ev, list):
+        out: List[Dict[str, object]] = []
+        for idx, item in enumerate(ev, start=1):
+            row = dict(item) if isinstance(item, dict) else {"insight": str(item), "quote": ""}
+            row["insight"] = _uniquify(
+                str(row.get("insight", "")),
+                f"启发点{idx}",
+                fallback_seed=f"证据{idx}的启发需与其他栏目区分。",
+            )
+            row["quote"] = _uniquify(
+                str(row.get("quote", "")),
+                f"通俗化重构参考内容{idx}",
+                fallback_seed=f"证据{idx}的重构内容需与其他栏目区分。",
+            )
+            out.append(row)
+        result["inspiring_evidence"] = out
     return result
 
 
@@ -785,10 +1126,11 @@ def analyze_question(
         if event.get("type") == "result":
             payload = event.get("payload")
             if isinstance(payload, dict):
-                final = payload
+                final = _ensure_unique_outputs(payload)
     return final or {
         "question": user_question,
         "stage": "",
+        "stage_explanation": "",
         "thesis": "",
         "antithesis": "",
         "false_synthesis": "",
@@ -815,17 +1157,17 @@ def analyze_question_stream(
     runtime_model = _pick_runtime_model(model, user_question)
     lvl = (detail_level or "standard").lower()
     if lvl == "concise":
-        runtime_max_tokens = max(1200, LLM_MAX_TOKENS)
-        runtime_chunk_chars = max(280, FAST_CHARS_PER_CHUNK)
-        runtime_total_chars = max(900, FAST_TOTAL_CHARS)
+        runtime_max_tokens = min(1200, max(700, LLM_MAX_TOKENS))
+        runtime_chunk_chars = max(140, FAST_CHARS_PER_CHUNK)
+        runtime_total_chars = max(520, FAST_TOTAL_CHARS)
     elif lvl == "detailed":
-        runtime_max_tokens = max(1800, LLM_MAX_TOKENS)
-        runtime_chunk_chars = max(420, FAST_CHARS_PER_CHUNK)
-        runtime_total_chars = max(1400, FAST_TOTAL_CHARS)
+        runtime_max_tokens = min(1800, max(1100, LLM_MAX_TOKENS))
+        runtime_chunk_chars = max(220, FAST_CHARS_PER_CHUNK)
+        runtime_total_chars = max(860, FAST_TOTAL_CHARS)
     else:
-        runtime_max_tokens = max(1400, LLM_MAX_TOKENS)
-        runtime_chunk_chars = max(340, FAST_CHARS_PER_CHUNK)
-        runtime_total_chars = max(1100, FAST_TOTAL_CHARS)
+        runtime_max_tokens = min(1500, max(900, LLM_MAX_TOKENS))
+        runtime_chunk_chars = max(180, FAST_CHARS_PER_CHUNK)
+        runtime_total_chars = max(680, FAST_TOTAL_CHARS)
     yield {"type": "status", "message": "正在检索资料（混合检索）..."}
     candidate = prefetched_candidates if isinstance(prefetched_candidates, list) else None
     if candidate is None:
@@ -844,6 +1186,14 @@ def analyze_question_stream(
     result = {
         "question": user_question,
         "stage": stage.name,
+        "stage_explanation": _default_stage_explanation(
+            user_question=user_question,
+            stage_name=stage.name,
+            thesis=stage.thesis,
+            antithesis=stage.antithesis,
+            contradiction=stage.contradiction_hint,
+            next_stage=stage.next_stage,
+        ),
         "thesis": stage.thesis,
         "antithesis": stage.antithesis,
         "false_synthesis": (
@@ -858,13 +1208,21 @@ def analyze_question_stream(
         "aufhebung": stage.aufhebung,
         "next_stage": stage.next_stage,
         "steps": stage.plan_steps,
-        "inspiring_evidence": candidate[:4],
+        "inspiring_evidence": candidate[:EVIDENCE_TARGET_COUNT],
         "analysis_mode": "rule_only",
         "ai_error": "",
     }
 
     if not api_key or not api_base or not model or not candidate:
+        result["inspiring_evidence"] = _ensure_evidence_count(
+            result.get("inspiring_evidence", []),  # type: ignore[arg-type]
+            candidate,
+            user_question=user_question,
+            detail_level=detail_level,
+            target_count=EVIDENCE_TARGET_COUNT,
+        )
         result = _enforce_result_minimums(result, detail_level, user_question)
+        result = _ensure_unique_outputs(result)
         yield {"type": "result", "payload": result}
         return
 
@@ -876,37 +1234,83 @@ def analyze_question_stream(
             max_total_chars=runtime_total_chars,
         )
         prompt = _build_prompt(user_question, attempt_chunks, detail_level=detail_level)
-        yield {"type": "status", "message": f"正在调用 AI（Streaming）... 当前模型：{runtime_model}"}
-        stream = _call_llm_json_stream(
-            prompt=prompt,
-            api_key=api_key,
-            api_base=api_base,
-            model=runtime_model,
-            timeout_s=LLM_READ_TIMEOUT_S,
-            max_tokens=runtime_max_tokens,
-        )
         ai: Optional[Dict[str, object]] = None
-        try:
-            while True:
-                event = next(stream)
-                if event.get("type") == "delta":
-                    yield event
-        except StopIteration as done:
-            ret = done.value
-            ai = ret if isinstance(ret, dict) else None
+        if ENABLE_STREAM_PRIMARY:
+            yield {"type": "status", "message": f"正在调用 AI（Streaming）... 当前模型：{runtime_model}"}
+            stream = _call_llm_json_stream(
+                prompt=prompt,
+                api_key=api_key,
+                api_base=api_base,
+                model=runtime_model,
+                timeout_s=LLM_READ_TIMEOUT_S,
+                max_tokens=runtime_max_tokens,
+            )
+            try:
+                while True:
+                    event = next(stream)
+                    if event.get("type") == "delta":
+                        yield event
+            except StopIteration as done:
+                ret = done.value
+                ai = ret if isinstance(ret, dict) else None
+            except Exception:
+                # 常见场景：上游连接中断（如 "Response ended prematurely"）。
+                # 兜底改走非流式，尽量避免直接回退规则模式。
+                yield {
+                    "type": "status",
+                    "message": "流式返回中断，正在自动切换为非流式重试...",
+                }
+                ai = _call_llm_json(
+                    prompt=prompt,
+                    api_key=api_key,
+                    api_base=api_base,
+                    model=runtime_model,
+                    timeout_s=LLM_READ_TIMEOUT_S,
+                    max_retries=LLM_MAX_RETRIES,
+                    max_tokens=runtime_max_tokens,
+                )
+        else:
+            # 默认非流式：更稳定，通常总耗时更低，失败率更低。
+            yield {"type": "status", "message": f"正在调用 AI（稳定模式）... 当前模型：{runtime_model}"}
+            ai = _call_llm_json(
+                prompt=prompt,
+                api_key=api_key,
+                api_base=api_base,
+                model=runtime_model,
+                timeout_s=LLM_READ_TIMEOUT_S,
+                max_retries=LLM_MAX_RETRIES,
+                max_tokens=runtime_max_tokens,
+            )
+        if not ai:
+            # 流式拿到的文本无法解析时，再做一次强制非流式补救，避免直接回退。
+            yield {"type": "status", "message": "AI 返回格式不稳，正在做非流式补救解析..."}
+            ai = _call_llm_json(
+                prompt=prompt,
+                api_key=api_key,
+                api_base=api_base,
+                model=runtime_model,
+                timeout_s=LLM_READ_TIMEOUT_S,
+                max_retries=LLM_MAX_RETRIES,
+                max_tokens=runtime_max_tokens,
+            )
         if not ai:
             result["ai_error"] = "AI 返回无法解析，已回退规则模式。"
+            result = _ensure_unique_outputs(result)
             yield {"type": "result", "payload": result}
             return
 
         if not isinstance(ai, dict):
             result["ai_error"] = "AI 返回格式异常（非 JSON 对象），已回退规则模式。"
+            result = _ensure_unique_outputs(result)
             yield {"type": "result", "payload": result}
             return
 
         stage_ov = _pick_refine_str(ai, "stage_override", "")
         if stage_ov:
             result["stage"] = stage_ov
+        result["stage_explanation"] = _pick_refine_str(
+            ai, "stage_explain_refine", str(result.get("stage_explanation", ""))
+        )
 
         result["thesis"] = _pick_refine_str(ai, "thesis_refine", str(result.get("thesis", "")))
         result["antithesis"] = _pick_refine_str(ai, "antithesis_refine", str(result.get("antithesis", "")))
@@ -922,16 +1326,25 @@ def analyze_question_stream(
 
         steps_refine = ai.get("steps_refine")
         if isinstance(steps_refine, list) and steps_refine:
-            result["steps"] = [str(s) for s in steps_refine[:5]]
+            result["steps"] = [str(s) for s in steps_refine[:10]]
 
         ev = ai.get("inspiring_evidence")
-        if isinstance(ev, list) and ev:
+        if isinstance(ev, list):
             # IMPORTANT: source excerpt must come from full (non-truncated) candidate chunks.
-            result["inspiring_evidence"] = _normalize_inspiring_evidence_length(
-                ev[:2],
+            result["inspiring_evidence"] = _ensure_evidence_count(
+                ev,
                 candidate,
                 user_question=user_question,
                 detail_level=detail_level,
+                target_count=EVIDENCE_TARGET_COUNT,
+            )
+        else:
+            result["inspiring_evidence"] = _ensure_evidence_count(
+                [],
+                candidate,
+                user_question=user_question,
+                detail_level=detail_level,
+                target_count=EVIDENCE_TARGET_COUNT,
             )
         result["analysis_mode"] = "ai_enhanced"
         # 保存缓存：仅缓存成功的 AI 增强结果
@@ -943,6 +1356,7 @@ def analyze_question_stream(
                 for k in list(cache.keys())[:overflow]:
                     cache.pop(k, None)
             _save_analysis_cache(cache)
+        result = _ensure_unique_outputs(result)
         yield {"type": "result", "payload": result}
         return
     except Exception as ex:
@@ -966,8 +1380,16 @@ def analyze_question_stream(
                 f" 详情：{ex!r}"
             )
         else:
-            result["ai_error"] = f"AI 调用失败，已回退规则模式：{ex}"
+            if "expecting ',' delimiter" in low or "json" in low or "decode" in low:
+                result["ai_error"] = (
+                    "AI 返回文本格式不稳定（JSON 结构异常），已触发自动修复与非流式补救；"
+                    "仍失败后回退规则模式。可稍后重试，或减少单次输出复杂度。"
+                    f" 详情：{ex}"
+                )
+            else:
+                result["ai_error"] = f"AI 调用失败，已回退规则模式：{ex}"
         result = _enforce_result_minimums(result, detail_level, user_question)
+        result = _ensure_unique_outputs(result)
         yield {"type": "result", "payload": result}
         return
 

@@ -385,7 +385,14 @@ with tab_qa:
             if result.get("ai_error"):
                 st.warning(result["ai_error"])
 
-            st.markdown('<div class="result-card"><b>所处逻辑环节</b><br/>' + str(result["stage"]) + "</div>", unsafe_allow_html=True)
+            stage_block = (
+                '<div class="result-card"><b>所处逻辑环节</b><br/>'
+                + str(result.get("stage", ""))
+                + "<br/><br/>"
+                + str(result.get("stage_explanation", ""))
+                + "</div>"
+            )
+            st.markdown(stage_block, unsafe_allow_html=True)
             st.markdown('<div class="result-card"><b>正题</b><br/>' + str(result["thesis"]) + "</div>", unsafe_allow_html=True)
             st.markdown('<div class="result-card"><b>反题</b><br/>' + str(result["antithesis"]) + "</div>", unsafe_allow_html=True)
             st.markdown('<div class="result-card"><b>虚假的合题</b><br/>' + str(result.get("false_synthesis", "（待生成）")) + "</div>", unsafe_allow_html=True)
@@ -437,17 +444,18 @@ with tab_kb:
     if not records:
         st.info("暂无资料，请先同步或上传。")
     else:
-        for r in records:
+        for i, r in enumerate(records):
             col1, col2, col3, col4 = st.columns([6, 2, 2, 2])
             col1.write(Path(r.path).name)
-            enabled_now = col2.checkbox("启用", value=r.enabled, key=f"enabled-{r.id}")
+            row_key = f"{i}-{r.id}"
+            enabled_now = col2.checkbox("启用", value=r.enabled, key=f"enabled-{row_key}")
             if enabled_now != r.enabled:
                 set_doc_enabled(r.path, enabled_now)
                 st.rerun()
-            if col3.button("移除清单", key=f"remove-{r.id}"):
+            if col3.button("移除清单", key=f"remove-{row_key}"):
                 remove_doc(r.path, delete_file=False)
                 st.rerun()
-            if col4.button("删除文件", key=f"delete-{r.id}"):
+            if col4.button("删除文件", key=f"delete-{row_key}"):
                 remove_doc(r.path, delete_file=True)
                 st.rerun()
 
