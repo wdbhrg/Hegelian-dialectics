@@ -1,29 +1,15 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal EnableExtensions
 cd /d "%~dp0"
 
-:: Try to find conda and activate it (check E:\Miniconda3 first)
-if exist "E:\Miniconda3\Scripts\activate.bat" (
-    call "E:\Miniconda3\Scripts\activate.bat" hegel 2>nul || call "E:\Miniconda3\Scripts\activate.bat" base 2>nul
-) else if exist "%UserProfile%\miniconda3\Scripts\activate.bat" (
-    call "%UserProfile%\miniconda3\Scripts\activate.bat" hegel 2>nul || call "%UserProfile%\miniconda3\Scripts\activate.bat" base 2>nul
-) else if exist "%UserProfile%\anaconda3\Scripts\activate.bat" (
-    call "%UserProfile%\anaconda3\Scripts\activate.bat" hegel 2>nul || call "%UserProfile%\anaconda3\Scripts\activate.bat" base 2>nul
+:: Project root = this script's folder (moving the folder keeps paths valid).
+:: If you use a project-local venv, prepending it helps when conda is not on PATH.
+if exist "%~dp0.venv\Scripts\python.exe" (
+    set "PATH=%~dp0.venv\Scripts;%PATH%"
 )
 
-:: Also try to set PATH directly if python is not found
-where python >nul 2>nul
-if errorlevel 1 (
-    if exist "E:\Miniconda3\python.exe" (
-        set "PATH=E:\Miniconda3;E:\Miniconda3\Scripts;%PATH%"
-    ) else if exist "%UserProfile%\miniconda3\python.exe" (
-        set "PATH=%UserProfile%\miniconda3;%UserProfile%\miniconda3\Scripts;%PATH%"
-    ) else if exist "%UserProfile%\anaconda3\python.exe" (
-        set "PATH=%UserProfile%\anaconda3;%UserProfile%\anaconda3\Scripts;%PATH%"
-    )
-)
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command "& {& '%~dp0start-hegel-app.ps1'}"
+:: Detection of conda / system Python is done in start-hegel-app.ps1 (no fixed drive letters).
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start-hegel-app.ps1"
 set EXITCODE=%ERRORLEVEL%
 if not "%EXITCODE%"=="0" (
   echo.
