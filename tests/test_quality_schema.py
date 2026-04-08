@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 from quality_metrics import citation_relevance_proxy, field_duplicate_rate, structure_completeness
 from quality_schema import repair_analysis_payload, validate_analysis_payload
 
