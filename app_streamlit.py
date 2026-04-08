@@ -10,6 +10,8 @@ import hegel_engine as _hegel_engine
 from knowledge_base import (
     add_uploaded_doc,
     build_index,
+    deduplicate_manifest_books,
+    reconcile_library_with_manifest,
     load_index,
     load_manifest,
     register_default_books,
@@ -175,6 +177,18 @@ st.markdown(
     font-weight: 700;
     font-size: 1.05rem;
     margin-top: 0.2rem;
+}
+.kb-ops {
+    border: 1px solid #e8eefb;
+    background: #f8fbff;
+    border-radius: 12px;
+    padding: 10px 12px;
+    margin: 8px 0 12px 0;
+}
+.kb-hint {
+    color: #4b5563;
+    font-size: 0.92rem;
+    margin-top: 4px;
 }
 div.stButton > button[kind="primary"] {
     background: #0b63f6;
@@ -430,15 +444,31 @@ with tab_kb:
         """
 <div class="hl-card">
   <div class="section-title">资料库管理</div>
-  推荐先点击 <b>同步 hegel-books 目录</b>，再点击 <b>重建索引（用于问答检索）</b>。
+  统一资料目录：<b>library/</b>。点击一次按钮，自动完成同步、去重、对照与重建索引。
 </div>
 """,
         unsafe_allow_html=True,
     )
     st.subheader("已接入资料")
-    if st.button("同步 hegel-books 目录", use_container_width=True):
+    st.markdown('<div class="kb-ops">', unsafe_allow_html=True)
+    if st.button("一键整理资料库", type="primary", use_container_width=True, key="kb_one_click_cleanup"):
         register_default_books()
-        st.success("已同步 hegel-books 到资料清单。")
+        dedup_stats = deduplicate_manifest_books()
+        reconcile_stats = reconcile_library_with_manifest()
+        payload = build_index()
+        st.success(
+            "整理完成："
+            f"去重移除 {dedup_stats.get('removed', 0)} 条，"
+            f"library 删除重复文件 {dedup_stats.get('files_deleted', 0)} 个，"
+            f"清单移除失效记录 {reconcile_stats.get('manifest_removed_missing_upload_records', 0)} 条，"
+            f"library 删除孤儿文件 {reconcile_stats.get('library_deleted_orphans', 0)} 个；"
+            f"索引现为 {payload.get('doc_count', 0)} 个文档 / {payload.get('chunk_count', 0)} 个片段。"
+        )
+        failed = int(dedup_stats.get("files_delete_failed", 0)) + int(reconcile_stats.get("library_delete_failed", 0))
+        if failed > 0:
+            st.warning(f"有 {failed} 个文件删除失败（可能被占用或权限不足）。")
+        st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
 
     records = load_manifest()
     if not records:
@@ -459,21 +489,42 @@ with tab_kb:
                 remove_doc(r.path, delete_file=True)
                 st.rerun()
 
-    st.subheader("上传新资料")
-    uploaded = st.file_uploader(
-        "支持 .epub / .txt / .md / .docx",
-        type=["epub", "txt", "md", "docx"],
-        accept_multiple_files=True,
-    )
-    if uploaded and st.button("加入资料库"):
-        for f in uploaded:
-            add_uploaded_doc(f.name, f.read())
-        st.success("已加入资料库清单。")
+    st.subheader("导入新资料到 library")
+    with st.form("kb_upload_form", clear_on_submit=True):
+        uploaded = st.file_uploader(
+            "支持 .epub / .txt / .md / .docx",
+            type=["epub", "txt", "md", "docx"],
+            accept_multiple_files=True,
+            key="kb_upload_files",
+        )
+        upload_submit = st.form_submit_button("导入到统一资料目录", use_container_width=True)
 
-    st.subheader("索引维护")
-    if st.button("重建索引（用于问答检索）", type="primary", use_container_width=True):
-        payload = build_index()
-        st.success(f"重建完成：{payload['doc_count']} 个文档，{payload['chunk_count']} 个片段。")
+    if upload_submit:
+        if not uploaded:
+            st.toast("请先选择要上传的文件。", icon="⚠️")
+            st.warning("请先选择要上传的文件。")
+        else:
+            ok = 0
+            failed = 0
+            failed_names = []
+            for f in uploaded:
+                try:
+                    add_uploaded_doc(f.name, f.read())
+                    ok += 1
+                except Exception:
+                    failed += 1
+                    failed_names.append(f.name)
+            if ok > 0 and failed == 0:
+                st.toast(f"上传成功：{ok} 个文件已导入。", icon="✅")
+                st.success(f"上传成功：{ok} 个文件已导入到 library 并加入资料清单。")
+                st.rerun()
+            elif ok > 0 and failed > 0:
+                st.toast(f"部分成功：成功 {ok}，失败 {failed}。", icon="⚠️")
+                st.warning(f"部分成功：成功 {ok}，失败 {failed}。失败文件：{', '.join(failed_names[:6])}")
+                st.rerun()
+            else:
+                st.toast("上传失败，请重试。", icon="❌")
+                st.error("上传失败：未能导入任何文件，请检查文件格式/权限后重试。")
 
     idx = load_index()
     st.write(f"当前索引：{idx.get('doc_count', 0)} 个文档，{idx.get('chunk_count', 0)} 个片段。")

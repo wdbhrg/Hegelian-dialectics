@@ -6,9 +6,10 @@ venv/
 .env.*
 !.env.example
 data/
-uploads/
+library/
 .cursor/
 *.log
+uploads/
 hegel-books/
 doc_extracted.txt
 

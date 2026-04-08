@@ -452,6 +452,55 @@ function Ensure-Requirements {
     }
 }
 
+function Get-PortPids([int]$Port) {
+    $out = @()
+    $lines = netstat -ano | Select-String (":" + $Port)
+    foreach ($line in $lines) {
+        $parts = ($line.ToString().Trim() -split "\s+")
+        if ($parts.Length -ge 5) {
+            $pidStr = $parts[-1]
+            if ($pidStr -match "^\d+$") { $out += [int]$pidStr }
+        }
+    }
+    return ($out | Select-Object -Unique)
+}
+
+function Is-PortBusy([int]$Port) {
+    $pids = Get-PortPids -Port $Port
+    return ($pids.Count -gt 0)
+}
+
+function Stop-OldStreamlitOnPort([int]$Port) {
+    $stopped = 0
+    $pids = Get-PortPids -Port $Port
+    foreach ($procId in $pids) {
+        try {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId"
+            $cmd = [string]$proc.CommandLine
+            $name = [string]$proc.Name
+            # 只清理与本项目相关的 python/streamlit 进程，避免误杀其他服务
+            if (
+                ($name -match "(?i)python(\.exe)?|streamlit(\.exe)?") -and
+                ($cmd -match "(?i)streamlit") -and
+                ($cmd -match "(?i)app_streamlit\.py|hegel-logic")
+            ) {
+                Write-Host "[INFO] Stopping old Streamlit PID: $procId"
+                Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+                $stopped += 1
+            }
+        } catch {}
+    }
+    return $stopped
+}
+
+function Find-FreePort([int]$StartPort, [int]$MaxTries = 20) {
+    for ($i = 0; $i -lt $MaxTries; $i++) {
+        $p = $StartPort + $i
+        if (-not (Is-PortBusy -Port $p)) { return $p }
+    }
+    return -1
+}
+
 try {
     Write-Host "[1/5] Resolving python runtime..." -ForegroundColor Green
     Resolve-PythonRuntime
@@ -481,35 +530,23 @@ try {
 
     Write-Host ""
     Write-Host "[4/5] Checking port 8501..." -ForegroundColor Green
-    $portBusy = netstat -ano | Select-String ":8501"
-    if ($portBusy) {
-        Write-Host "[NOTICE] Port 8501 is already in use. Trying to restart with latest code..."
-        $portPids = @()
-        foreach ($line in $portBusy) {
-            $parts = ($line.ToString().Trim() -split "\s+")
-            if ($parts.Length -ge 5) {
-                $pidStr = $parts[-1]
-                if ($pidStr -match "^\d+$") { $portPids += [int]$pidStr }
+    $targetPort = 8501
+    if (Is-PortBusy -Port $targetPort) {
+        Write-Host "[NOTICE] Port 8501 is in use. Trying to restart old app..."
+        $stopped = Stop-OldStreamlitOnPort -Port $targetPort
+        if ($stopped -gt 0) {
+            Start-Sleep -Seconds 1
+        }
+        if (Is-PortBusy -Port $targetPort) {
+            $freePort = Find-FreePort -StartPort 8502 -MaxTries 30
+            if ($freePort -lt 0) {
+                FailAndExit "Port 8501 is busy and no free fallback port found." @(
+                    "Close old app windows and retry",
+                    "Or manually pick a free port: python -m streamlit run app_streamlit.py --server.port <PORT>"
+                )
             }
-        }
-        $portPids = $portPids | Select-Object -Unique
-        foreach ($procId in $portPids) {
-            try {
-                $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId"
-                $cmd = $proc.CommandLine
-                if ($cmd -and $cmd -match "streamlit" -and $cmd -match "app_streamlit.py") {
-                    Write-Host "[INFO] Stopping old Streamlit PID: $procId"
-                    Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
-                }
-            } catch {}
-        }
-        Start-Sleep -Seconds 1
-        $portBusy = netstat -ano | Select-String ":8501"
-        if ($portBusy) {
-            FailAndExit "Port 8501 is still busy after restart attempt." @(
-                "Close old app windows and retry",
-                "Or run app on another port manually"
-            )
+            $targetPort = $freePort
+            Write-Host "[NOTICE] Port 8501 still busy. Switching to port $targetPort."
         }
     }
 
@@ -522,16 +559,16 @@ try {
 
     Write-Host ""
     Write-Host "[5/5] Launch succeeded. Opening browser..." -ForegroundColor Green
-    Write-Host "URL: http://localhost:8501"
+    Write-Host "URL: http://localhost:$targetPort"
     Write-Host "Keep this window open while using the app."
-    Start-Process "http://localhost:8501" | Out-Null
+    Start-Process ("http://localhost:" + $targetPort) | Out-Null
 
-    Invoke-Py -Arguments @("-m", "streamlit", "run", "app_streamlit.py", "--server.headless", "true", "--server.port", "8501")
+    Invoke-Py -Arguments @("-m", "streamlit", "run", "app_streamlit.py", "--server.headless", "true", "--server.port", "$targetPort")
     if ($LASTEXITCODE -ne 0) {
         FailAndExit "Streamlit failed to start." @(
             "Check selected conda env has streamlit installed",
-            "Check port 8501 availability",
-            "Manual run: python -m streamlit run app_streamlit.py --server.port 8501"
+            "Check port availability",
+            "Manual run: python -m streamlit run app_streamlit.py --server.port <PORT>"
         )
     }
 }

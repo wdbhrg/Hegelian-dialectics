@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import html
 import json
+import hashlib
 import re
+import shutil
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
@@ -11,8 +13,12 @@ from typing import Dict, List, Tuple
 
 
 DATA_DIR = Path("data")
-UPLOAD_DIR = Path("uploads")
-DEFAULT_BOOK_DIR = Path("hegel-books")
+LIBRARY_DIR = Path("library")
+# backward-compat aliases (kept for existing call sites/env expectations)
+UPLOAD_DIR = LIBRARY_DIR
+DEFAULT_BOOK_DIR = LIBRARY_DIR
+LEGACY_UPLOAD_DIR = Path("uploads")
+LEGACY_BOOK_DIR = Path("hegel-books")
 MANIFEST_PATH = DATA_DIR / "manifest.json"
 INDEX_PATH = DATA_DIR / "index.json"
 _INDEX_CACHE: Dict[str, object] | None = None
@@ -28,8 +34,39 @@ class DocRecord:
 
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True)
-    UPLOAD_DIR.mkdir(exist_ok=True)
-    DEFAULT_BOOK_DIR.mkdir(exist_ok=True)
+    LIBRARY_DIR.mkdir(exist_ok=True)
+    _migrate_legacy_dirs_into_library()
+
+
+def _unique_library_target(name: str) -> Path:
+    target = LIBRARY_DIR / name
+    stem, suffix = target.stem, target.suffix
+    counter = 1
+    while target.exists():
+        target = LIBRARY_DIR / f"{stem}_{counter}{suffix}"
+        counter += 1
+    return target
+
+
+def _migrate_legacy_dirs_into_library() -> None:
+    """
+    将旧目录 uploads/ 与 hegel-books/ 中的资料自动并入 library/。
+    保留文件内容，遇到同名则自动改名，避免覆盖。
+    """
+    for old_dir in (LEGACY_UPLOAD_DIR, LEGACY_BOOK_DIR):
+        if old_dir.resolve() == LIBRARY_DIR.resolve():
+            continue
+        if not old_dir.exists() or not old_dir.is_dir():
+            continue
+        for p in old_dir.glob("*"):
+            if not p.is_file() or p.suffix.lower() not in {".epub", ".txt", ".md", ".docx"}:
+                continue
+            target = _unique_library_target(p.name)
+            try:
+                shutil.move(str(p), str(target))
+            except Exception:
+                # 迁移失败不阻断主流程，后续仍可由用户手动处理。
+                pass
 
 
 def _safe_doc_id(path: Path) -> str:
@@ -55,7 +92,7 @@ def save_manifest(records: List[DocRecord]) -> None:
 def register_default_books() -> List[DocRecord]:
     ensure_dirs()
     existing = {r.path: r for r in load_manifest()}
-    for p in DEFAULT_BOOK_DIR.glob("*"):
+    for p in LIBRARY_DIR.glob("*"):
         if p.is_file() and p.suffix.lower() in {".epub", ".txt", ".md", ".docx"}:
             key = str(p.resolve())
             if key not in existing:
@@ -84,11 +121,11 @@ def remove_doc(doc_path: str, delete_file: bool = False) -> None:
 
 def add_uploaded_doc(filename: str, content: bytes) -> str:
     ensure_dirs()
-    target = UPLOAD_DIR / filename
+    target = LIBRARY_DIR / filename
     stem, suffix = target.stem, target.suffix
     counter = 1
     while target.exists():
-        target = UPLOAD_DIR / f"{stem}_{counter}{suffix}"
+        target = LIBRARY_DIR / f"{stem}_{counter}{suffix}"
         counter += 1
     target.write_bytes(content)
 
@@ -96,6 +133,198 @@ def add_uploaded_doc(filename: str, content: bytes) -> str:
     records.append(DocRecord(id=_safe_doc_id(target), path=str(target.resolve()), enabled=True))
     save_manifest(records)
     return str(target.resolve())
+
+
+def _normalized_path_key(path_str: str) -> str:
+    p = Path(path_str)
+    try:
+        return str(p.resolve()).lower()
+    except Exception:
+        return str(p).strip().lower()
+
+
+def _file_sha1(path: Path) -> str:
+    h = hashlib.sha1()
+    with path.open("rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _record_priority(rec: DocRecord) -> Tuple[int, int, int]:
+    """
+    选择保留记录时的优先级：
+    1) enabled=True 优先
+    2) 文件存在优先
+    3) 默认书库目录优先
+    """
+    p = Path(rec.path)
+    exists = int(p.exists() and p.is_file())
+    try:
+        in_default = int(LIBRARY_DIR.resolve().as_posix().lower() in p.resolve().as_posix().lower())
+    except Exception:
+        in_default = 0
+    return (int(rec.enabled), exists, in_default)
+
+
+def deduplicate_manifest_books() -> Dict[str, int]:
+    """
+    清理 manifest 中重复书籍，仅保留一份。
+    判重规则（严格）：
+    - 文件存在时：按文件内容 SHA1 判重（内容一致即重复）
+    - 文件不存在时：按规范化路径判重（兜底）
+    """
+    records = load_manifest()
+    if not records:
+        return {"before": 0, "after": 0, "removed": 0, "files_deleted": 0, "files_delete_failed": 0}
+
+    chosen: Dict[Tuple[str, str], DocRecord] = {}
+    order: List[Tuple[str, str]] = []
+    hash_cache: Dict[str, str] = {}
+
+    for rec in records:
+        norm_path = _normalized_path_key(rec.path)
+        path_group = ("path", norm_path)
+
+        p = Path(rec.path)
+        content_group: Tuple[str, str] | None = None
+        try:
+            if p.exists() and p.is_file():
+                if norm_path in hash_cache:
+                    sha1 = hash_cache[norm_path]
+                else:
+                    sha1 = _file_sha1(p)
+                    hash_cache[norm_path] = sha1
+                content_group = ("sha1", sha1)
+        except Exception:
+            content_group = None
+
+        group_key = content_group or path_group
+
+        if group_key not in chosen:
+            chosen[group_key] = rec
+            order.append(group_key)
+            continue
+
+        old = chosen[group_key]
+        if _record_priority(rec) > _record_priority(old):
+            chosen[group_key] = rec
+
+    deduped = [chosen[k] for k in order]
+    before = len(records)
+    after = len(deduped)
+    removed = max(0, before - after)
+    files_deleted = 0
+    files_delete_failed = 0
+
+    if removed > 0:
+        # 只删除“被去重淘汰”且位于统一资料目录 library/ 的文件，避免误删外部文件。
+        kept_norm_paths = {_normalized_path_key(r.path) for r in deduped}
+        try:
+            library_root = str(LIBRARY_DIR.resolve()).lower()
+        except Exception:
+            library_root = str(LIBRARY_DIR).lower()
+
+        # 计算被淘汰记录（多次重复记录可能指向同一路径，去重后再删）
+        dropped_norm_paths: set[str] = set()
+        for r in records:
+            norm = _normalized_path_key(r.path)
+            if norm not in kept_norm_paths:
+                dropped_norm_paths.add(norm)
+
+        for norm in dropped_norm_paths:
+            try:
+                p = Path(norm)
+                # 仅清理 library 目录下的真实文件
+                in_library = str(p.resolve()).lower().startswith(library_root)
+                if in_library and p.exists() and p.is_file():
+                    p.unlink()
+                    files_deleted += 1
+            except Exception:
+                files_delete_failed += 1
+
+        save_manifest(deduped)
+
+    return {
+        "before": before,
+        "after": after,
+        "removed": removed,
+        "files_deleted": files_deleted,
+        "files_delete_failed": files_delete_failed,
+    }
+
+
+def reconcile_library_with_manifest() -> Dict[str, int]:
+    """
+    将 library/ 与 manifest 中资料记录一一对照并同步：
+    - 删除 library 中未被 manifest 引用的孤儿文件
+    - 删除 manifest 中指向 library 但文件已不存在的记录
+    """
+    records = load_manifest()
+    try:
+        library_root = str(LIBRARY_DIR.resolve()).lower()
+    except Exception:
+        library_root = str(LIBRARY_DIR).lower()
+
+    def _is_upload_path(path_str: str) -> bool:
+        try:
+            return str(Path(path_str).resolve()).lower().startswith(library_root)
+        except Exception:
+            return str(path_str).lower().startswith(library_root)
+
+    # 1) 清理 manifest 中失效的 library 记录（文件不存在）
+    missing_upload_records = 0
+    kept_records: List[DocRecord] = []
+    for r in records:
+        if _is_upload_path(r.path):
+            p = Path(r.path)
+            if not (p.exists() and p.is_file()):
+                missing_upload_records += 1
+                continue
+        kept_records.append(r)
+
+    # 2) 删除 library 中未被清单引用的孤儿文件
+    referenced_uploads = {_normalized_path_key(r.path) for r in kept_records if _is_upload_path(r.path)}
+    orphan_files_deleted = 0
+    orphan_files_delete_failed = 0
+
+    ensure_dirs()
+    for f in LIBRARY_DIR.glob("*"):
+        if not f.is_file():
+            continue
+        if f.suffix.lower() not in {".epub", ".txt", ".md", ".docx"}:
+            continue
+        norm = _normalized_path_key(str(f))
+        if norm in referenced_uploads:
+            continue
+        try:
+            f.unlink()
+            orphan_files_deleted += 1
+        except Exception:
+            orphan_files_delete_failed += 1
+
+    # 3) 写回 manifest（仅当发生变化）
+    if missing_upload_records > 0 or len(kept_records) != len(records):
+        save_manifest(kept_records)
+
+    return {
+        "manifest_before": len(records),
+        "manifest_after": len(kept_records),
+        "manifest_removed_missing_upload_records": missing_upload_records,
+        "library_deleted_orphans": orphan_files_deleted,
+        "library_delete_failed": orphan_files_delete_failed,
+        # backward-compat keys
+        "uploads_deleted_orphans": orphan_files_deleted,
+        "uploads_delete_failed": orphan_files_delete_failed,
+    }
+
+
+def reconcile_uploads_with_manifest() -> Dict[str, int]:
+    # backward-compat alias
+    return reconcile_library_with_manifest()
 
 
 def _strip_html(raw: str) -> str:
