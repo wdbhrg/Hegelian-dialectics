@@ -3,9 +3,46 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
 data/
 uploads/
 .cursor/
 *.log
 hegel-books/
 doc_extracted.txt
+
+# Streamlit / app runtime & cache
+.streamlit/
+**/.streamlit/
+
+# Python tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+.eggs/
+dist/
+build/
+htmlcov/
+.coverage
+coverage.xml
+
+# Local DBs / session blobs (do not ship user data)
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+
+# Generic caches
+.cache/
+**/cache/
+
+# OS / editors
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.tmp
+*.temp
