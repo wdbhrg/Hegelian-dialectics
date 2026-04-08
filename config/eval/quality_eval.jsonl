@@ -1,0 +1,5 @@
+{"question":"我知道该学习，但总拖延，最后焦虑爆发。", "min_structure":0.95, "max_duplicate_rate":0.35, "min_citation_relevance":0.4}
+{"question":"工作任务很多，精力总被打散，效率上不去。", "min_structure":0.95, "max_duplicate_rate":0.35, "min_citation_relevance":0.4}
+{"question":"慢性病反复让我睡不着，第二天又撑着工作。", "min_structure":0.95, "max_duplicate_rate":0.35, "min_citation_relevance":0.4}
+{"question":"和伴侣沟通总升级冲突，最后谁都不想说话。", "min_structure":0.95, "max_duplicate_rate":0.35, "min_citation_relevance":0.4}
+{"question":"我总想一次做到完美，结果反而半途而废。", "min_structure":0.95, "max_duplicate_rate":0.35, "min_citation_relevance":0.4}

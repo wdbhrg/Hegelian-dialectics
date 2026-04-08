@@ -71,6 +71,7 @@ if analyze_question_stream is None:
         }
 
 clear_analysis_cache = getattr(_hegel_engine, "clear_analysis_cache", None)
+get_runtime_metrics = getattr(_hegel_engine, "get_runtime_metrics", None)
 
 
 def call_analyze_stream_compat(
@@ -228,6 +229,24 @@ with tab_qa:
             st.success("已清空分析缓存。")
         else:
             st.warning("当前运行模块不支持清缓存函数，请重启后重试。")
+    if callable(get_runtime_metrics):
+        try:
+            m = get_runtime_metrics() or {}
+            counters = m.get("counters", {}) if isinstance(m, dict) else {}
+            lat = m.get("latencies", {}) if isinstance(m, dict) else {}
+            a_total = int(counters.get("analysis_total", 0))
+            a_ai = int(counters.get("analysis_ai_enhanced", 0))
+            a_fb = int(counters.get("analysis_fallback_rule", 0))
+            hit = int(counters.get("analysis_cache_hit", 0))
+            a_ok_rate = (a_ai / a_total * 100.0) if a_total > 0 else 0.0
+            p95 = 0.0
+            if isinstance(lat, dict):
+                p95 = float(((lat.get("analysis_total_ms") or {}).get("p95_ms", 0.0)))
+            st.caption(
+                f"运行指标：总请求 {a_total} | AI增强 {a_ai} | 回退 {a_fb} | 缓存命中 {hit} | AI成功率 {a_ok_rate:.1f}% | P95耗时 {p95:.0f}ms"
+            )
+        except Exception:
+            pass
 
     st.subheader("AI API 配置（可选，但建议填写）")
     profiles = ui_state.get("api_profiles", [])
@@ -339,10 +358,11 @@ with tab_qa:
     # Pre-fetch：在用户输入阶段预取检索结果，减少点击后的首段等待。
     q_now = question.strip()
     q_last = st.session_state.get("_prefetch_question", "")
+    prefetch_top_k = 4
     # 预取触发门槛：问题过短不预取，减少无效检索开销
     if len(q_now) >= 8 and q_now != q_last:
         try:
-            st.session_state["_prefetch_candidates"] = search_chunks(q_now, top_k=4)
+            st.session_state["_prefetch_candidates"] = search_chunks(q_now, top_k=prefetch_top_k)
             st.session_state["_prefetch_question"] = q_now
         except Exception:
             st.session_state["_prefetch_candidates"] = []
@@ -438,8 +458,15 @@ with tab_qa:
                         elif item.get("text"):
                             st.markdown("**参考原文原句片段**：")
                             st.write(item["text"])
+            st.caption("建议：若想提升准确性，可在问题中补充更具体情境与约束。")
 
 with tab_kb:
+    pending_toast = st.session_state.pop("_kb_pending_toast", None)
+    if isinstance(pending_toast, dict):
+        msg = str(pending_toast.get("message", "")).strip()
+        icon = str(pending_toast.get("icon", "ℹ️")).strip() or "ℹ️"
+        if msg:
+            st.toast(msg, icon=icon)
     st.markdown(
         """
 <div class="hl-card">
@@ -452,22 +479,34 @@ with tab_kb:
     st.subheader("已接入资料")
     st.markdown('<div class="kb-ops">', unsafe_allow_html=True)
     if st.button("一键整理资料库", type="primary", use_container_width=True, key="kb_one_click_cleanup"):
-        register_default_books()
-        dedup_stats = deduplicate_manifest_books()
-        reconcile_stats = reconcile_library_with_manifest()
-        payload = build_index()
-        st.success(
-            "整理完成："
-            f"去重移除 {dedup_stats.get('removed', 0)} 条，"
-            f"library 删除重复文件 {dedup_stats.get('files_deleted', 0)} 个，"
-            f"清单移除失效记录 {reconcile_stats.get('manifest_removed_missing_upload_records', 0)} 条，"
-            f"library 删除孤儿文件 {reconcile_stats.get('library_deleted_orphans', 0)} 个；"
-            f"索引现为 {payload.get('doc_count', 0)} 个文档 / {payload.get('chunk_count', 0)} 个片段。"
-        )
-        failed = int(dedup_stats.get("files_delete_failed", 0)) + int(reconcile_stats.get("library_delete_failed", 0))
-        if failed > 0:
-            st.warning(f"有 {failed} 个文件删除失败（可能被占用或权限不足）。")
-        st.rerun()
+        st.toast("正在整理资料库，请稍候...", icon="⏳")
+        try:
+            register_default_books()
+            dedup_stats = deduplicate_manifest_books()
+            reconcile_stats = reconcile_library_with_manifest()
+            payload = build_index()
+            st.success(
+                "整理完成："
+                f"去重移除 {dedup_stats.get('removed', 0)} 条，"
+                f"library 删除重复文件 {dedup_stats.get('files_deleted', 0)} 个，"
+                f"清单移除失效记录 {reconcile_stats.get('manifest_removed_missing_upload_records', 0)} 条，"
+                f"library 删除孤儿文件 {reconcile_stats.get('library_deleted_orphans', 0)} 个；"
+                f"索引现为 {payload.get('doc_count', 0)} 个文档 / {payload.get('chunk_count', 0)} 个片段。"
+            )
+            st.toast("资料库整理完成", icon="✅")
+            failed = int(dedup_stats.get("files_delete_failed", 0)) + int(reconcile_stats.get("library_delete_failed", 0))
+            if failed > 0:
+                st.warning(f"有 {failed} 个文件删除失败（可能被占用或权限不足）。")
+                st.session_state["_kb_pending_toast"] = {
+                    "message": f"整理完成，但有 {failed} 个文件删除失败",
+                    "icon": "⚠️",
+                }
+            else:
+                st.session_state["_kb_pending_toast"] = {"message": "资料库整理完成", "icon": "✅"}
+            st.rerun()
+        except Exception as ex:
+            st.error(f"整理失败：{ex}")
+            st.toast("资料库整理失败，请重试", icon="❌")
     st.markdown("</div>", unsafe_allow_html=True)
 
     records = load_manifest()

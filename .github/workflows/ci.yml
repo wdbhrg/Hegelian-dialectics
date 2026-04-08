@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Compile check
+        run: |
+          python -m py_compile hegel_engine.py knowledge_base.py app_streamlit.py hegel_dialogue_machine.py retrieval.py telemetry.py retrieval_eval.py env_bootstrap.py quality_schema.py quality_metrics.py quality_retriever.py quality_reranker.py quality_cache.py quality_llm.py quality_pipeline.py quality_gate.py fastapi_app.py
+
+      - name: Run tests
+        run: |
+          pytest -q
+

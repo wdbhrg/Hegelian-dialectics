@@ -1,173 +1,147 @@
 ﻿# 黑格尔逻辑学对话机（Hegelian-dialectics）
 
-一个面向真实生活难题的辩证分析工具：把“说不清、做不到、反复内耗”的问题，拆成可执行结构，并结合本地资料做证据增强输出。
+面向真实问题的辩证分析应用：输入生活/学习/工作困境，输出结构化分析与证据支撑，并提供质量优先的 API 管线（召回、重排、生成、校验、修复）。
 
 ---
 
 ## 项目定位
 
-这个项目不是“泛泛聊天”，而是解决以下实际痛点：
+本项目不是通用闲聊，而是强调：
 
-- 知道道理但无法执行，长期拖延与反复
-- 学习 / 工作 / 健康 / 关系目标相互冲突，难以排序
-- AI 建议过于抽象，缺少当天可落地动作
-- 网络抖动导致调用失败、结构异常、体验断裂
-
-项目目标：在保证结构完整的前提下，输出更快、更稳、更可执行。
+- 结构化思考（正题/反题/合题/矛盾/下一环节）
+- 可解释证据（本地资料库 RAG）
+- 质量稳定（回退机制 + schema 校验 + 质量门禁）
+- 工程可运行（Windows 一键启动、CI/CD、可观测）
 
 ---
 
-## 核心功能
+## 核心能力
 
-### 1) 辩证结构化输出（完整模块）
-
-每次分析输出包含：
-
-- 所处逻辑环节（详细通俗讲解）
-- 正题 / 反题
-- 虚假的合题 / 真正的合题
-- 主要矛盾
-- 下一环节
-- 具体扬弃计划（执行版，至少 10 条）
-- 证据区（启发点 + 通俗化重构参考内容 + 原文片段）
-
-### 2) 输出质量控制
-
-- 关键字段避免原样复读用户原句
-- 多栏目输出做去重约束，降低“同句复用”
-- 字段有最低字数约束，保证信息密度
-- 失败时规则模式兜底，确保始终有结果
-
-### 3) 资料库（RAG）
-
-- 支持 `epub/txt/md/docx` 导入
-- 统一资料目录：`library/`
-- 一键整理资料库：同步目录 → 严格去重（内容哈希）→ 清单对照 → 重建索引
-- 证据数量可配置并自动补齐（默认 6 条）
-
-### 4) 稳定性与性能优化
-
-- 默认稳定模式（非流式主链路）
-- 流式失败自动降级重试
-- JSON 容错解析（缺逗号/尾逗号等常见异常）
-- SSL/连接中断重试与退避
-- 本地缓存命中快速返回
-
-### 5) Windows 一键启动
-
-- 自动解析 Python/Conda/venv
-- 自动检查依赖
-- 端口冲突自动处理（含 fallback 端口）
-- 项目目录可移动，不依赖固定盘符
+- **对话分析主链路**
+  - 输出固定结构：逻辑环节、正反题、合题、矛盾、执行步骤、证据片段
+  - AI 与规则模式双路径，调用失败自动回退
+- **资料库管理**
+  - 支持 `epub/txt/md/docx`
+  - 一键整理资料库：同步、去重、对照、重建索引
+- **质量优先 API 管线**
+  - `retrieve -> rerank -> generate -> validate -> repair -> score`
+  - 可选接入 Qdrant / Cross-Encoder / LiteLLM / Redis
+- **质量评估**
+  - 离线检索评测：`retrieval_eval.py`
+  - 质量门禁评测：`quality_gate.py`
 
 ---
 
-## 技术栈（完整）
+## 技术栈
 
-### 运行层
-
-- Python 3.10+
-- Streamlit
-- requests
-
-### 核心模块
-
-- `app_streamlit.py`：Web UI 与交互流程
-- `hegel_engine.py`：辩证分析引擎、LLM 调用、输出后处理、缓存
-- `knowledge_base.py`：文档接入、分块、检索、资料库整理
-- `hegel_dialogue_machine.py`：CLI 入口
-- `start-hegel-app.ps1` / `一键启动-黑格尔对话机.bat`：Windows 启动链路
-
-### 存储与目录
-
-- `data/`：运行缓存、索引、UI 历史
-- `library/`：统一资料目录（上传与本地资料合并）
+- **应用层**：Python, Streamlit, FastAPI
+- **模型与编排**：LiteLLM, LangGraph
+- **检索与重排**：Qdrant（可选）, sentence-transformers（Embedding + Cross-Encoder）
+- **缓存与基础设施**：Redis（可选）, requests
+- **质量与测试**：jsonschema, pytest, GitHub Actions
 
 ---
 
-## 架构流程
+## 架构概览
 
 ```text
-用户输入
-  ↓
-Streamlit UI（app_streamlit.py）
-  ↓
-分析引擎（hegel_engine.py）
-  ├─ 环节识别与规则兜底
-  ├─ 检索候选融合（来自 knowledge_base）
-  ├─ LLM 调用（稳定模式优先 + 容错重试）
-  ├─ 输出规范化（字数、去重、去复读）
-  └─ 本地缓存
-  ↓
-结果展示（结构化模块 + 证据区）
+用户 -> Streamlit UI
+        -> hegel_engine.py（主分析链路）
+        -> knowledge_base.py / retrieval.py（资料检索）
+
+API 用户 -> FastAPI (/analyze)
+          -> quality_pipeline.py
+             -> quality_retriever.py (Qdrant/本地回退)
+             -> quality_reranker.py (Cross-Encoder/回退)
+             -> quality_llm.py (LiteLLM/回退)
+             -> quality_schema.py (校验+修复)
+             -> quality_metrics.py (质量评分)
+             -> quality_cache.py (Redis/内存缓存)
 ```
 
 ---
 
-## 目录结构
+## 关键文件
 
-```text
-.
-├─ app_streamlit.py
-├─ hegel_engine.py
-├─ knowledge_base.py
-├─ hegel_dialogue_machine.py
-├─ start-hegel-app.ps1
-├─ 一键启动-黑格尔对话机.bat
-├─ requirements.txt
-├─ data/       # 运行缓存与索引
-└─ library/    # 统一资料目录
-```
+- `app_streamlit.py`：前端 UI
+- `hegel_engine.py`：核心分析引擎（主链路）
+- `knowledge_base.py`：资料接入、分块、索引与检索
+- `retrieval.py`：本地检索排序
+- `fastapi_app.py`：质量优先 API 入口
+- `quality_pipeline.py`：LangGraph 风格质量管线
+- `quality_gate.py`：质量门禁脚本
+- `retrieval_eval.py`：离线检索评测
+- `telemetry.py`：运行指标采集
+- `一键启动-黑格尔对话机.bat`：Windows 一键启动全栈
 
 ---
 
 ## 快速开始
 
-### 方式 A（推荐，Windows）
+### Windows 一键启动（推荐）
 
-双击：`一键启动-黑格尔对话机.bat`
+双击运行：`一键启动-黑格尔对话机.bat`
 
-### 方式 B（命令行）
+### 命令行启动 UI
 
 ```bash
 pip install -r requirements.txt
 streamlit run app_streamlit.py
 ```
 
----
+### 启动质量优先 API
 
-## 使用建议
-
-1. 打开“资料库管理”
-2. 点击“一键整理资料库”
-3. 返回“对话分析”输入问题
-4. 优先执行计划中的最小动作，再复盘
+```bash
+uvicorn fastapi_app:app --host 0.0.0.0 --port 8000
+```
 
 ---
 
-## 关键环境变量（可选）
+## 评测与测试
 
-- `HEGEL_STREAM_PRIMARY`：是否优先流式（默认 0）
-- `HEGEL_LLM_MAX_RETRIES`：LLM 重试次数
-- `HEGEL_LLM_READ_TIMEOUT`：读取超时秒数
-- `HEGEL_LLM_RETRY_BACKOFF`：重试退避秒数
-- `HEGEL_SEARCH_TOP_K`：检索候选数量
-- `HEGEL_FAST_MAX_CHUNKS`：送模片段数
-- `HEGEL_FAST_TOTAL_CHARS`：送模总字符预算
-- `HEGEL_EVIDENCE_COUNT`：证据目标条数
+- 运行单测：
+
+```bash
+pytest -q
+```
+
+- 离线检索评测：
+
+```bash
+python retrieval_eval.py
+```
+
+- 质量门禁评测：
+
+```bash
+python quality_gate.py
+```
 
 ---
 
-## 隐私与安全
+## 常用环境变量
 
-- `.gitignore` 默认排除 `data/`、`library/`、`.cursor/` 等本地运行数据
-- API Key 保存在本地 `data/ui_history.json`（明文），请做好本机安全
-- 不要把私密资料和密钥提交到远程仓库
+- `HEGEL_LLM_READ_TIMEOUT`：LLM 读取超时
+- `HEGEL_LLM_MAX_RETRIES`：重试次数
+- `HEGEL_SEARCH_TOP_K`：检索候选数
+- `HEGEL_RETRIEVER_MODE`：`lexical|hybrid|vector`
+- `HEGEL_QDRANT_URL` / `HEGEL_QDRANT_COLLECTION`：Qdrant 配置
+- `HEGEL_REDIS_URL`：Redis 缓存配置
+- `HEGEL_LITELLM_MODEL` / `HEGEL_LITELLM_BASE_URL`：LiteLLM 路由配置
+
+环境模板见：`config/environments/`
 
 ---
 
-## 当前迭代重点
+## 工程保障
 
-- 更低回退率（减少“AI 返回无法解析”）
-- 更高结构稳定性（字段完整、少重复、可执行）
-- 更快响应（减少上下文负载与无效重试）
+- CI：`.github/workflows/ci.yml`
+- CD：`.github/workflows/cd.yml`
+- 运维文档：`docs/operations/`
+
+---
+
+## 安全提示
+
+- 本地运行数据默认不入库（见 `.gitignore`）
+- 请勿提交真实 API Key / 隐私文档

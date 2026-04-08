@@ -6,11 +6,11 @@ import hashlib
 import re
 import shutil
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from retrieval import retrieve_ranked_chunks
 
 DATA_DIR = Path("data")
 LIBRARY_DIR = Path("library")
@@ -534,45 +534,11 @@ def _expand_chunk_context(anchor: Dict[str, str], by_doc: Dict[str, Dict[int, Di
 def search_chunks(query: str, top_k: int = 5) -> List[Dict[str, str]]:
     index = load_index()
     chunks = index.get("chunks", [])
-    q_terms = _tokenize_query(query)
-    if not q_terms:
+    if not query.strip():
         return []
-
-    # 1) 关键词预筛：先过滤掉大部分无关片段（大海捞针 -> 精准打击）
-    prefiltered: List[Tuple[int, Dict[str, str]]] = []
-    for ch in chunks:
-        text = ch["text"].lower()
-        lexical_score = 0
-        for t in q_terms:
-            if t in text:
-                weight = 2 if len(t) == 2 else 1
-                lexical_score += text.count(t) * weight
-        if lexical_score > 0:
-            prefiltered.append((lexical_score, ch))
-    if not prefiltered:
+    anchors = retrieve_ranked_chunks(query, chunks, top_k=top_k)
+    if not anchors:
         return []
-
-    prefiltered.sort(key=lambda x: x[0], reverse=True)
-    # 仅保留前 20%（至少 12 条）进入语义近似匹配
-    keep_n = max(12, int(len(prefiltered) * 0.2))
-    pool = prefiltered[:keep_n]
-
-    # 2) 混合打分：关键词 + 语义近似（轻量，无额外依赖）
-    def _score_one(item: Tuple[int, Dict[str, str]]) -> Tuple[float, Dict[str, str]]:
-        lexical_score, ch = item
-        sem = _semantic_proxy_score(query, str(ch.get("text", "")))
-        score = float(lexical_score) * 0.75 + sem * 0.25 * 100
-        return score, ch
-
-    # 并行打分：对候选池并发计算语义近似分，降低重排阶段耗时。
-    workers = min(8, max(2, len(pool)))
-    with ThreadPoolExecutor(max_workers=workers) as ex:
-        hybrid_scored = list(ex.map(_score_one, pool))
-    hybrid_scored.sort(key=lambda x: x[0], reverse=True)
-
-    # 3) Rerank：只取 Top3（若 top_k 更小则按 top_k）
-    rerank_k = min(3, max(1, top_k))
-    anchors = [ch for _, ch in hybrid_scored[:rerank_k]]
 
     # 4) small-to-big：返回命中块周边上下文
     by_doc: Dict[str, Dict[int, Dict[str, str]]] = {}

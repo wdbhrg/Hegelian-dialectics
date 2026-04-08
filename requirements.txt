@@ -1,2 +1,10 @@
 streamlit
 requests
+fastapi
+uvicorn
+langgraph
+litellm
+qdrant-client
+redis
+jsonschema
+sentence-transformers

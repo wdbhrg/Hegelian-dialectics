@@ -11,7 +11,12 @@ from typing import Dict, Generator, List, Optional
 
 import requests
 
+from env_bootstrap import bootstrap_env
 from knowledge_base import search_chunks
+from telemetry import increment as metric_inc, observe_latency as metric_observe, snapshot as telemetry_snapshot
+_log_retrieval_quality = None
+
+bootstrap_env()
 
 
 def _env_int(key: str, default: int, *, min_v: Optional[int] = None, max_v: Optional[int] = None) -> int:
@@ -94,6 +99,11 @@ def clear_analysis_cache() -> None:
             ANALYSIS_CACHE_PATH.unlink()
     except Exception:
         pass
+
+
+def get_runtime_metrics() -> Dict[str, object]:
+    """Expose runtime metrics for UI/ops."""
+    return telemetry_snapshot()
 
 
 def _make_cache_key(question: str, detail_level: str, model: str, candidate: List[Dict[str, str]]) -> str:
@@ -559,6 +569,7 @@ def _call_llm_json(
     max_retries: int = LLM_MAX_RETRIES,
     max_tokens: int = LLM_MAX_TOKENS,
 ) -> Optional[Dict[str, object]]:
+    _t_req = time.perf_counter()
     runtime_model = _pick_runtime_model(model, prompt)
     base = api_base.strip().rstrip("/")
     if base.endswith("/chat/completions"):
@@ -606,6 +617,7 @@ def _call_llm_json(
         ) as ex:
             last_error = ex
             if attempt >= max_retries:
+                metric_inc("llm_request_errors")
                 raise RuntimeError(f"Request timeout after retries: {ex}") from ex
             time.sleep(float(LLM_RETRY_BACKOFF_S) * (attempt + 1))
     else:
@@ -614,6 +626,7 @@ def _call_llm_json(
         raise RuntimeError("Request failed with unknown timeout error.")
 
     if resp.status_code >= 400:
+        metric_inc("llm_http_errors")
         try:
             err = resp.json()
         except Exception:
@@ -646,7 +659,13 @@ def _call_llm_json(
         content = content.strip("`")
         if content.startswith("json"):
             content = content[4:].strip()
-    return _try_parse_json_object(content)
+    parsed = _try_parse_json_object(content)
+    metric_observe("llm_request_ms", (time.perf_counter() - _t_req) * 1000.0)
+    if parsed is None:
+        metric_inc("llm_parse_failures")
+    else:
+        metric_inc("llm_parse_success")
+    return parsed
 
 
 def _try_parse_json_object(content: str) -> Optional[Dict[str, object]]:
@@ -1153,6 +1172,25 @@ def analyze_question_stream(
     prefetched_candidates: Optional[List[Dict[str, str]]] = None,
     detail_level: str = "standard",
 ) -> Generator[Dict[str, object], None, None]:
+    _t0 = time.perf_counter()
+    metric_inc("analysis_total")
+    def _record_retrieval_monitor(evidence: object) -> None:
+        if not callable(_log_retrieval_quality):
+            return
+        ev = evidence if isinstance(evidence, list) else []
+        citation = 0
+        for item in ev:
+            if isinstance(item, dict) and (item.get("source_excerpt") or item.get("text")):
+                citation += 1
+        try:
+            _log_retrieval_quality(
+                query=user_question,
+                hit_count=len(candidate) if isinstance(candidate, list) else 0,
+                evidence_count=len(ev),
+                citation_count=citation,
+            )
+        except Exception:
+            pass
     stage = detect_stage(user_question)
     runtime_model = _pick_runtime_model(model, user_question)
     lvl = (detail_level or "standard").lower()
@@ -1180,6 +1218,9 @@ def analyze_question_stream(
         cached_payload = dict(cached)
         cached_payload = _enforce_result_minimums(cached_payload, detail_level, user_question)
         cached_payload["cache_hit"] = True
+        metric_inc("analysis_cache_hit")
+        metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
+        _record_retrieval_monitor(cached_payload.get("inspiring_evidence", []))
         yield {"type": "status", "message": "命中本地缓存，直接返回结果。"}
         yield {"type": "result", "payload": cached_payload}
         return
@@ -1223,6 +1264,9 @@ def analyze_question_stream(
         )
         result = _enforce_result_minimums(result, detail_level, user_question)
         result = _ensure_unique_outputs(result)
+        metric_inc("analysis_rule_only")
+        metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
+        _record_retrieval_monitor(result.get("inspiring_evidence", []))
         yield {"type": "result", "payload": result}
         return
 
@@ -1296,12 +1340,20 @@ def analyze_question_stream(
         if not ai:
             result["ai_error"] = "AI 返回无法解析，已回退规则模式。"
             result = _ensure_unique_outputs(result)
+            metric_inc("analysis_fallback_rule")
+            metric_inc("analysis_parse_fallback")
+            metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
+            _record_retrieval_monitor(result.get("inspiring_evidence", []))
             yield {"type": "result", "payload": result}
             return
 
         if not isinstance(ai, dict):
             result["ai_error"] = "AI 返回格式异常（非 JSON 对象），已回退规则模式。"
             result = _ensure_unique_outputs(result)
+            metric_inc("analysis_fallback_rule")
+            metric_inc("analysis_parse_fallback")
+            metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
+            _record_retrieval_monitor(result.get("inspiring_evidence", []))
             yield {"type": "result", "payload": result}
             return
 
@@ -1357,6 +1409,9 @@ def analyze_question_stream(
                     cache.pop(k, None)
             _save_analysis_cache(cache)
         result = _ensure_unique_outputs(result)
+        metric_inc("analysis_ai_enhanced")
+        metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
+        _record_retrieval_monitor(result.get("inspiring_evidence", []))
         yield {"type": "result", "payload": result}
         return
     except Exception as ex:
@@ -1390,6 +1445,11 @@ def analyze_question_stream(
                 result["ai_error"] = f"AI 调用失败，已回退规则模式：{ex}"
         result = _enforce_result_minimums(result, detail_level, user_question)
         result = _ensure_unique_outputs(result)
+        metric_inc("analysis_fallback_rule")
+        if "timeout" in low or "timed out" in low:
+            metric_inc("analysis_timeout")
+        metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
+        _record_retrieval_monitor(result.get("inspiring_evidence", []))
         yield {"type": "result", "payload": result}
         return
 

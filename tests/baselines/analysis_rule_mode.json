@@ -1,0 +1,20 @@
+{
+  "required_keys": [
+    "question",
+    "stage",
+    "stage_explanation",
+    "thesis",
+    "antithesis",
+    "false_synthesis",
+    "true_synthesis",
+    "contradiction",
+    "aufhebung",
+    "next_stage",
+    "steps",
+    "inspiring_evidence",
+    "analysis_mode",
+    "ai_error"
+  ],
+  "min_steps": 10,
+  "allowed_modes": ["rule_only", "ai_enhanced"]
+}
