@@ -884,14 +884,19 @@ def _expand_to_min_len(text: str, min_chars: int, label: str, context: str = "")
         out = (out + " " + tail).strip()
 
     # 强制达标：直到满足最小字数，不再出现“看起来补了但仍不足”的情况
-    booster = (
-        f"继续围绕“{label}”推进时，把动作拆小、把反馈前移：每天只验证一个可执行动作，"
-        "用结果决定下一步，而不是靠情绪决定方向。"
-    )
+    boosters = [
+        f"围绕“{label}”推进，关键是把大目标拆成可执行的小步骤，每天只聚焦一个动作，用结果验证方向。",
+        f"在{ctx}的局面下，先建立最小可行的行动节奏，保持连续性比偶尔的爆发更重要。",
+        f"把注意力放在可控制的部分，从最小的改变开始，逐步累积正向反馈。",
+        f"每完成一个小目标，就记录下来，这会形成正向循环，增强你的信心和动力。",
+        f"保持耐心，改变需要时间，关键是持续行动，而不是追求完美。"
+    ]
     guard = 0
+    booster_index = 0
     while len(out) < min_chars and guard < 20:
-        out = (out + " " + booster).strip()
+        out = (out + " " + boosters[booster_index % len(boosters)]).strip()
         guard += 1
+        booster_index += 1
 
     # 给一点弹性上限，避免无限膨胀
     max_len = max(min_chars + 180, min_chars)
@@ -923,34 +928,34 @@ def _level_minlens(detail_level: str) -> Dict[str, int]:
     lvl = (detail_level or "standard").lower()
     if lvl == "concise":
         return {
-            "stage_explain": 420,
-            "thesis": 300,
-            "antithesis": 300,
-            "false": 420,
-            "true": 420,
-            "contradiction": 420,
-            "next": 260,
+            "stage_explain": 140,
+            "thesis": 80,
+            "antithesis": 80,
+            "false": 100,
+            "true": 100,
+            "contradiction": 100,
+            "next": 70,
             "step": 70,
         }
     if lvl == "detailed":
         return {
-            "stage_explain": 980,
-            "thesis": 760,
-            "antithesis": 760,
-            "false": 980,
-            "true": 980,
-            "contradiction": 980,
-            "next": 620,
+            "stage_explain": 260,
+            "thesis": 120,
+            "antithesis": 120,
+            "false": 150,
+            "true": 150,
+            "contradiction": 150,
+            "next": 110,
             "step": 140,
         }
     return {
-        "stage_explain": 700,
-        "thesis": 520,
-        "antithesis": 520,
-        "false": 700,
-        "true": 700,
-        "contradiction": 700,
-        "next": 420,
+        "stage_explain": 180,
+        "thesis": 100,
+        "antithesis": 100,
+        "false": 130,
+        "true": 130,
+        "contradiction": 130,
+        "next": 110,
         "step": 100,
     }
 
