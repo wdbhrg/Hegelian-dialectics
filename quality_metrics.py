@@ -41,8 +41,47 @@ def citation_relevance_proxy(payload: Dict[str, object]) -> float:
             continue
         if str(item.get("quote", "")).strip():
             with_quote += 1
-        if str(item.get("source_excerpt", "")).strip() or str(item.get("text", "")).strip():
+        if str(item.get("source_excerpt", "")) or str(item.get("text", "")):
             with_src += 1
     n = max(1, len(ev))
     return 0.5 * (with_quote / n) + 0.5 * (with_src / n)
+
+
+def text_repetition_rate(payload: Dict[str, object]) -> float:
+    """检测文本内部的重复率，特别是单个字段内的重复句子"""
+    fields = [
+        "stage_explanation",
+        "thesis",
+        "antithesis",
+        "false_synthesis",
+        "true_synthesis",
+        "contradiction",
+        "next_stage",
+        "analysis_mode",
+    ]
+    total_repetition = 0.0
+    total_sentences = 0
+    
+    for field in fields:
+        text = str(payload.get(field, "")).strip()
+        if not text:
+            continue
+        
+        # 分割句子
+        sentences = [s.strip() for s in text.split('。') if s.strip()]
+        if len(sentences) <= 1:
+            continue
+        
+        # 计算句子重复率
+        unique_sentences = set(sentences)
+        repetition = len(sentences) - len(unique_sentences)
+        field_repetition_rate = repetition / len(sentences)
+        
+        total_repetition += field_repetition_rate
+        total_sentences += len(sentences)
+    
+    if total_sentences == 0:
+        return 0.0
+    
+    return total_repetition / len([f for f in fields if str(payload.get(f, "")).strip()])
 

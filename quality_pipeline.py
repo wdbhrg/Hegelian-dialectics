@@ -4,7 +4,7 @@ from typing import Dict, List, TypedDict
 
 from quality_cache import get_json, make_key, set_json
 from quality_llm import generate_analysis_with_router
-from quality_metrics import citation_relevance_proxy, field_duplicate_rate, structure_completeness
+from quality_metrics import citation_relevance_proxy, field_duplicate_rate, structure_completeness, text_repetition_rate
 from quality_reranker import rerank_candidates
 from quality_retriever import retrieve_candidates
 from quality_schema import repair_analysis_payload, validate_analysis_payload
@@ -64,6 +64,7 @@ def run_quality_pipeline(question: str, model_hint: str = "") -> Dict[str, objec
                 "structure_completeness": round(structure_completeness(out), 4),
                 "field_duplicate_rate": round(field_duplicate_rate(out), 4),
                 "citation_relevance_proxy": round(citation_relevance_proxy(out), 4),
+                "text_repetition_rate": round(text_repetition_rate(out), 4),
             }
             return s
 
@@ -94,6 +95,7 @@ def run_quality_pipeline(question: str, model_hint: str = "") -> Dict[str, objec
             "structure_completeness": round(structure_completeness(out), 4),
             "field_duplicate_rate": round(field_duplicate_rate(out), 4),
             "citation_relevance_proxy": round(citation_relevance_proxy(out), 4),
+            "text_repetition_rate": round(text_repetition_rate(out), 4),
         }
 
     result = dict(state.get("final_output", {}))

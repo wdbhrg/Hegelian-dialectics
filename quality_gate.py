@@ -33,10 +33,12 @@ def run_quality_gate() -> Dict[str, object]:
         sc = float(quality.get("structure_completeness", 0.0))
         dr = float(quality.get("field_duplicate_rate", 1.0))
         cr = float(quality.get("citation_relevance_proxy", 0.0))
+        tr = float(quality.get("text_repetition_rate", 1.0))
         ok = (
             sc >= float(row.get("min_structure", 0.95))
             and dr <= float(row.get("max_duplicate_rate", 0.35))
             and cr >= float(row.get("min_citation_relevance", 0.4))
+            and tr <= float(row.get("max_text_repetition", 0.1))
         )
         if ok:
             passed += 1
