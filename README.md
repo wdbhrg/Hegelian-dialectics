@@ -1,133 +1,249 @@
-﻿# 黑格尔逻辑学对话机（Hegelian-dialectics）
+# 黑格尔逻辑学对话机（Hegelian Dialectics AI）
 
-面向真实问题的辩证分析应用：输入生活/学习/工作困境，输出结构化分析与证据支撑，并提供质量优先的 API 管线（召回、重排、生成、校验、修复）。
+基于黑格尔《逻辑学》经典结构的辩证分析系统。输入生活/学习/工作困境，输出结构化辩证分析与证据支撑，严格遵循存在论-本质论-概念论的逻辑发展路径。
 
 ---
 
 ## 项目定位
 
-本项目不是通用闲聊，而是强调：
+本项目不是通用闲聊机器人，而是**严格的黑格尔逻辑学应用**：
 
-- 结构化思考（正题/反题/合题/矛盾/下一环节）
-- 可解释证据（本地资料库 RAG）
-- 质量稳定（回退机制 + schema 校验 + 质量门禁）
-- 工程可运行（Windows 一键启动、CI/CD、可观测）
+- **经典逻辑结构**：严格按照黑格尔《逻辑学》的15个逻辑环节（存在论→本质论→概念论）
+- **辩证方法论**：正题/反题/合题/矛盾/扬弃的完整分析框架
+- **可解释证据**：本地资料库 RAG，提供黑格尔原著片段支撑
+- **质量保障**：AI增强+规则回退双模式，schema校验+质量门禁
+- **工程可用**：Windows一键启动、CI/CD、可观测指标
 
 ---
 
 ## 核心能力
 
-- **对话分析主链路**
-  - 输出固定结构：逻辑环节、正反题、合题、矛盾、执行步骤、证据片段
-  - AI 与规则模式双路径，调用失败自动回退
-- **资料库管理**
-  - 支持 `epub/txt/md/docx`
-  - 一键整理资料库：同步、去重、对照、重建索引
-- **质量优先 API 管线**
-  - `retrieve -> rerank -> generate -> validate -> repair -> score`
-  - 可选接入 Qdrant / Cross-Encoder / LiteLLM / Redis
-- **质量评估**
-  - 离线检索评测：`retrieval_eval.py`
-  - 质量门禁评测：`quality_gate.py`
+### 1. 辩证分析主链路
+- **15个逻辑环节**：严格遵循黑格尔逻辑学结构
+  - 存在论（质-定在、质-自为存在、量-纯量、尺度）
+  - 本质论（本质与现象、现实）
+  - 概念论（主观概念、客体、理念）
+- **结构化输出**：所处逻辑环节、正题、反题、虚假合题、真正合题、主要矛盾、下一环节、执行步骤
+- **三档输出长度**：简洁/标准/详细，严格区分字数
+- **双模式运行**：AI增强模式 + 规则回退模式（API故障时自动切换）
+
+### 2. 资料库管理
+- **多格式支持**：epub、txt、md、docx
+- **一键整理**：同步、去重、对照、重建索引
+- **混合检索**：词法+语义+向量三重检索
+- **small-to-big**：返回命中块周边上下文
+
+### 3. 质量优先 API 管线
+```
+retrieve → rerank → generate → validate → repair → score
+```
+- **检索**：Qdrant（可选）/ 本地混合检索
+- **重排**：Cross-Encoder（可选）/ 语义相似度
+- **生成**：LiteLLM 统一接口，支持多模型
+- **校验**：JSON Schema 严格校验
+- **修复**：自动修复缺失字段
+- **评分**：结构完整度、字段重复率、引用相关性、文本重复率
+
+### 4. 质量评估体系
+- **离线检索评测**：`retrieval_eval.py`
+- **质量门禁评测**：`quality_gate.py`
+- **运行指标采集**：P95延迟、缓存命中率、AI成功率
 
 ---
 
 ## 技术栈
 
-- **应用层**：Python, Streamlit, FastAPI
-- **模型与编排**：LiteLLM, LangGraph
-- **检索与重排**：Qdrant（可选）, sentence-transformers（Embedding + Cross-Encoder）
-- **缓存与基础设施**：Redis（可选）, requests
-- **质量与测试**：jsonschema, pytest, GitHub Actions
+| 层级 | 技术 |
+|------|------|
+| **应用层** | Python 3.11+, Streamlit, FastAPI, Uvicorn |
+| **逻辑核心** | 黑格尔逻辑学15环节模型 (`hegel_stages.py`) |
+| **模型编排** | LiteLLM, LangGraph |
+| **检索与重排** | sentence-transformers (Embedding + Cross-Encoder), Qdrant (可选) |
+| **缓存** | Redis (可选), 内存缓存 |
+| **质量保障** | jsonschema, pytest, GitHub Actions |
+| **部署** | Docker (可选), Windows批处理 |
 
 ---
 
-## 架构概览
+## 系统架构
 
-```text
-用户 -> Streamlit UI
-        -> hegel_engine.py（主分析链路）
-        -> knowledge_base.py / retrieval.py（资料检索）
-
-API 用户 -> FastAPI (/analyze)
-          -> quality_pipeline.py
-             -> quality_retriever.py (Qdrant/本地回退)
-             -> quality_reranker.py (Cross-Encoder/回退)
-             -> quality_llm.py (LiteLLM/回退)
-             -> quality_schema.py (校验+修复)
-             -> quality_metrics.py (质量评分)
-             -> quality_cache.py (Redis/内存缓存)
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        用户交互层                            │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
+│  │ Streamlit UI │  │  FastAPI     │  │   一键启动   │      │
+│  │  (app_*.py)  │  │  (/analyze)  │  │   (.bat)     │      │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────┘      │
+└─────────┼─────────────────┼────────────────────────────────┘
+          │                 │
+          └────────┬────────┘
+                   ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      辩证分析引擎                            │
+│                    (hegel_engine.py)                         │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐         │
+│  │  环节检测   │  │  辩证分析   │  │  结果规范化 │         │
+│  │ detect_stage│  │analyze_*    │  │enforce_*    │         │
+│  └──────┬──────┘  └──────┬──────┘  └─────────────┘         │
+│         │                │                                   │
+│         └────────────────┘                                   │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              黑格尔逻辑学15环节模型                    │   │
+│  │         (hegel_stages.py - STAGES列表)               │   │
+│  │  存在论(4) → 本质论(2) → 概念论(9)                   │   │
+│  └─────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
+│   资料库管理     │  │   质量管线       │  │   缓存系统       │
+│knowledge_base.py│  │quality_pipeline │  │  quality_cache  │
+│  - 文档导入     │  │  - retrieve     │  │  - Redis        │
+│  - 分块索引     │  │  - rerank       │  │  - 内存缓存     │
+│  - 混合检索     │  │  - generate     │  │  - 磁盘缓存     │
+└─────────────────┘  │  - validate     │  └─────────────────┘
+                     │  - repair       │
+                     │  - score        │
+                     └─────────────────┘
 ```
 
 ---
 
-## 关键文件
+## 核心文件说明
 
-- `app_streamlit.py`：前端 UI
-- `hegel_engine.py`：核心分析引擎（主链路）
-- `knowledge_base.py`：资料接入、分块、索引与检索
-- `retrieval.py`：本地检索排序
-- `fastapi_app.py`：质量优先 API 入口
-- `quality_pipeline.py`：LangGraph 风格质量管线
-- `quality_gate.py`：质量门禁脚本
-- `retrieval_eval.py`：离线检索评测
-- `telemetry.py`：运行指标采集
-- `一键启动-黑格尔对话机.bat`：Windows 一键启动全栈
+| 文件 | 职责 |
+|------|------|
+| `app_streamlit.py` | Streamlit前端UI，对话界面与资料库管理 |
+| `hegel_engine.py` | 核心分析引擎，辩证分析主链路 |
+| `hegel_stages.py` | **黑格尔逻辑学15环节定义**（存在论→本质论→概念论） |
+| `knowledge_base.py` | 资料接入、分块、索引与检索 |
+| `retrieval.py` | 本地混合检索（词法+语义+向量） |
+| `fastapi_app.py` | FastAPI质量优先接口 |
+| `quality_pipeline.py` | LangGraph风格质量管线 |
+| `quality_*.py` | 质量模块：检索、重排、LLM、校验、评分、缓存 |
+| `telemetry.py` | 运行指标采集与监控 |
+| `一键启动-黑格尔对话机.bat` | Windows一键启动脚本 |
+
+---
+
+## 黑格尔逻辑学15环节
+
+系统严格按照黑格尔《逻辑学》的经典结构定义了15个逻辑环节：
+
+### 存在论（Being）
+1. **质-定在**：事物的直接存在与质的规定性
+2. **质-自为存在**：从"一"到"多"的辩证运动
+3. **量-纯量**：量变与质变的辩证关系
+4. **尺度**：质与量的统一，度的把握
+
+### 本质论（Essence）
+5. **本质与现象**：透过现象看本质
+6. **现实**：现实、可能性与必然性的统一
+
+### 概念论（Concept）
+7. **主观概念-概念本身**：普遍性、特殊性、个别性的统一
+8. **主观概念-判断**：从质的判断到概念判断
+9. **主观概念-推理**：推理的辩证运动
+10. **客体-机械性**：外在的机械联系
+11. **客体-化学性**：内在的化学性质
+12. **目的性**：目的与手段的辩证关系
+13. **理念-生命**：生命作为理念的自我运动
+14. **理念-认识**：理论与实践的统一
+15. **理念-绝对理念**：逻辑学的最高范畴
+
+每个环节包含：正题、反题、矛盾提示、扬弃方向、下一环节、执行步骤、关键词。
 
 ---
 
 ## 快速开始
 
-### Windows 一键启动（推荐）
+### 方式一：Windows一键启动（推荐）
 
 双击运行：`一键启动-黑格尔对话机.bat`
 
-### 命令行启动 UI
+自动完成：环境检查 → 依赖安装 → 启动Streamlit服务
+
+### 方式二：命令行启动
 
 ```bash
+# 1. 安装依赖
 pip install -r requirements.txt
+
+# 2. 启动对话界面
 streamlit run app_streamlit.py
+
+# 3. 启动质量优先API（可选）
+uvicorn fastapi_app:app --host 0.0.0.0 --port 8000
 ```
 
-### 启动质量优先 API
+### 方式三：Docker部署（可选）
 
 ```bash
-uvicorn fastapi_app:app --host 0.0.0.0 --port 8000
+docker build -t hegel-dialectics .
+docker run -p 8501:8501 -p 8000:8000 hegel-dialectics
 ```
 
 ---
 
-## 评测与测试
+## 使用指南
 
-- 运行单测：
+### 1. 对话分析
+
+1. 输入你的生活/学习/工作问题
+2. 选择输出长度（简洁/标准/详细）
+3. 点击"开始辩证拆解"
+4. 查看结构化分析结果：
+   - 所处逻辑环节（黑格尔逻辑学定位）
+   - 正题/反题/虚假合题/真正合题
+   - 主要矛盾
+   - 下一环节
+   - 具体执行步骤
+   - 黑格尔原著证据片段
+
+### 2. 资料库管理
+
+1. 进入"资料库管理"标签
+2. 点击"一键整理资料库"同步文档
+3. 上传新资料（支持epub/txt/md/docx）
+4. 系统自动分块、索引、去重
+
+### 3. API配置（可选）
+
+支持OpenAI兼容接口：
+- API Base URL
+- Endpoint ID（模型ID）
+- API Key
+
+未配置API时，系统自动使用规则回退模式。
+
+---
+
+## 测试与评测
 
 ```bash
+# 运行单元测试
 pytest -q
-```
 
-- 离线检索评测：
-
-```bash
+# 离线检索评测
 python retrieval_eval.py
-```
 
-- 质量门禁评测：
-
-```bash
+# 质量门禁评测
 python quality_gate.py
 ```
 
 ---
 
-## 常用环境变量
+## 环境变量配置
 
-- `HEGEL_LLM_READ_TIMEOUT`：LLM 读取超时
-- `HEGEL_LLM_MAX_RETRIES`：重试次数
-- `HEGEL_SEARCH_TOP_K`：检索候选数
-- `HEGEL_RETRIEVER_MODE`：`lexical|hybrid|vector`
-- `HEGEL_QDRANT_URL` / `HEGEL_QDRANT_COLLECTION`：Qdrant 配置
-- `HEGEL_REDIS_URL`：Redis 缓存配置
-- `HEGEL_LITELLM_MODEL` / `HEGEL_LITELLM_BASE_URL`：LiteLLM 路由配置
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `HEGEL_LLM_READ_TIMEOUT` | LLM读取超时 | 90s |
+| `HEGEL_LLM_MAX_RETRIES` | 重试次数 | 2 |
+| `HEGEL_SEARCH_TOP_K` | 检索候选数 | 10 |
+| `HEGEL_RETRIEVER_MODE` | 检索模式 | hybrid |
+| `HEGEL_QDRANT_URL` | Qdrant地址 | - |
+| `HEGEL_REDIS_URL` | Redis地址 | - |
 
 环境模板见：`config/environments/`
 
@@ -135,13 +251,54 @@ python quality_gate.py
 
 ## 工程保障
 
-- CI：`.github/workflows/ci.yml`
-- CD：`.github/workflows/cd.yml`
-- 运维文档：`docs/operations/`
+- **CI/CD**：GitHub Actions自动测试与部署
+- **监控**：运行指标采集（延迟、成功率、缓存命中率）
+- **文档**：运维文档（告警、回滚、密钥管理、SLO/SLA）
+- **安全**：本地数据默认不入库，API Key本地存储
 
 ---
 
-## 安全提示
+## 项目结构
 
-- 本地运行数据默认不入库（见 `.gitignore`）
-- 请勿提交真实 API Key / 隐私文档
+```
+.
+├── app_streamlit.py          # Streamlit前端
+├── hegel_engine.py           # 核心分析引擎
+├── hegel_stages.py           # 黑格尔15环节定义
+├── knowledge_base.py         # 资料库管理
+├── retrieval.py              # 检索算法
+├── fastapi_app.py            # FastAPI接口
+├── quality_*.py              # 质量管线模块
+├── telemetry.py              # 指标采集
+├── tests/                    # 测试用例
+├── config/                   # 配置与环境
+├── docs/                     # 运维文档
+└── 一键启动-黑格尔对话机.bat  # Windows启动脚本
+```
+
+---
+
+## 贡献指南
+
+1. Fork本仓库
+2. 创建功能分支：`git checkout -b feature/xxx`
+3. 提交更改：`git commit -m "Add xxx"`
+4. 推送分支：`git push origin feature/xxx`
+5. 创建Pull Request
+
+---
+
+## 许可证
+
+MIT License
+
+---
+
+## 致谢
+
+- 黑格尔《逻辑学》（大逻辑/小逻辑）
+- 开源社区：Streamlit, FastAPI, LangGraph, LiteLLM, sentence-transformers
+
+---
+
+**注意**：本项目为黑格尔逻辑学的应用实践，旨在通过辩证方法帮助用户分析问题，不构成专业心理咨询或医疗建议。
