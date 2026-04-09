@@ -1169,6 +1169,10 @@ def analyze_question(
     }
 
 
+# 全局缓存，用于存储分析结果
+_ANALYSIS_CACHE: Dict[str, Dict[str, object]] = {}
+
+
 def analyze_question_stream(
     user_question: str,
     api_key: str = "",
@@ -1177,8 +1181,10 @@ def analyze_question_stream(
     prefetched_candidates: Optional[List[Dict[str, str]]] = None,
     detail_level: str = "standard",
 ) -> Generator[Dict[str, object], None, None]:
+    """分析问题的流式接口，带有缓存优化"""
     _t0 = time.perf_counter()
     metric_inc("analysis_total")
+    
     def _record_retrieval_monitor(evidence: object) -> None:
         if not callable(_log_retrieval_quality):
             return
@@ -1196,9 +1202,13 @@ def analyze_question_stream(
             )
         except Exception:
             pass
+    
+    # 快速检测阶段
     stage = detect_stage(user_question)
     runtime_model = _pick_runtime_model(model, user_question)
     lvl = (detail_level or "standard").lower()
+    
+    # 设置运行时参数
     if lvl == "concise":
         runtime_max_tokens = min(1200, max(700, LLM_MAX_TOKENS))
         runtime_chunk_chars = max(140, FAST_CHARS_PER_CHUNK)
@@ -1211,18 +1221,38 @@ def analyze_question_stream(
         runtime_max_tokens = min(1500, max(900, LLM_MAX_TOKENS))
         runtime_chunk_chars = max(180, FAST_CHARS_PER_CHUNK)
         runtime_total_chars = max(680, FAST_TOTAL_CHARS)
+    
+    # 使用预取的候选或进行检索
     yield {"type": "status", "message": "正在检索资料（混合检索）..."}
     candidate = prefetched_candidates if isinstance(prefetched_candidates, list) else None
     if candidate is None:
         candidate = search_chunks(user_question, top_k=FAST_SEARCH_TOP_K)
     yield {"type": "status", "message": f"检索完成：命中 {len(candidate)} 条（已 rerank Top3 + small-to-big）。"}
+    
+    # 生成缓存键
     cache_key = _make_cache_key(user_question, detail_level, runtime_model, candidate)
+    
+    # 检查内存缓存
+    if cache_key in _ANALYSIS_CACHE:
+        cached_payload = dict(_ANALYSIS_CACHE[cache_key])
+        cached_payload = _enforce_result_minimums(cached_payload, detail_level, user_question)
+        cached_payload["cache_hit"] = True
+        metric_inc("analysis_cache_hit")
+        metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
+        _record_retrieval_monitor(cached_payload.get("inspiring_evidence", []))
+        yield {"type": "status", "message": "命中内存缓存，直接返回结果。"}
+        yield {"type": "result", "payload": cached_payload}
+        return
+    
+    # 检查磁盘缓存
     cache = _load_analysis_cache()
     cached = cache.get(cache_key)
     if isinstance(cached, dict):
         cached_payload = dict(cached)
         cached_payload = _enforce_result_minimums(cached_payload, detail_level, user_question)
         cached_payload["cache_hit"] = True
+        # 更新内存缓存
+        _ANALYSIS_CACHE[cache_key] = cached_payload
         metric_inc("analysis_cache_hit")
         metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)
         _record_retrieval_monitor(cached_payload.get("inspiring_evidence", []))
@@ -1413,6 +1443,16 @@ def analyze_question_stream(
                 for k in list(cache.keys())[:overflow]:
                     cache.pop(k, None)
             _save_analysis_cache(cache)
+        
+        # 更新内存缓存
+        _ANALYSIS_CACHE[cache_key] = dict(result)
+        # 限制内存缓存大小
+        if len(_ANALYSIS_CACHE) > 100:
+            # 简单 FIFO: 删除最早插入的若干条
+            overflow = len(_ANALYSIS_CACHE) - 100
+            for k in list(_ANALYSIS_CACHE.keys())[:overflow]:
+                _ANALYSIS_CACHE.pop(k, None)
+        
         result = _ensure_unique_outputs(result)
         metric_inc("analysis_ai_enhanced")
         metric_observe("analysis_total_ms", (time.perf_counter() - _t0) * 1000.0)

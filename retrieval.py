@@ -93,19 +93,34 @@ def _vector_scores(query: str, pool: List[Tuple[int, Dict[str, str]]]) -> Dict[s
         return {}
 
 
+@lru_cache(maxsize=1000)
+def _get_lexical_score(text: str, q_terms: tuple) -> int:
+    """计算词法分数，带有缓存"""
+    lexical_score = 0
+    for t in q_terms:
+        if t in text:
+            weight = 2 if len(t) == 2 else 1
+            lexical_score += text.count(t) * weight
+    return lexical_score
+
+
+@lru_cache(maxsize=1000)
+def _get_semantic_score(query: str, text: str) -> float:
+    """计算语义分数，带有缓存"""
+    return _semantic_proxy_score(query, text)
+
+
 def retrieve_ranked_chunks(query: str, chunks: List[Dict[str, str]], top_k: int) -> List[Dict[str, str]]:
-    q_terms = _tokenize_query(query)
+    """检索排名靠前的chunks，带有缓存机制"""
+    q_terms = tuple(_tokenize_query(query))  # 转换为tuple以使用缓存
     if not q_terms or not chunks:
         return []
 
     prefiltered: List[Tuple[int, Dict[str, str]]] = []
     for ch in chunks:
         text = str(ch.get("text", "")).lower()
-        lexical_score = 0
-        for t in q_terms:
-            if t in text:
-                weight = 2 if len(t) == 2 else 1
-                lexical_score += text.count(t) * weight
+        # 使用缓存的词法分数计算
+        lexical_score = _get_lexical_score(text, q_terms)
         if lexical_score > 0:
             prefiltered.append((lexical_score, ch))
     if not prefiltered:
@@ -118,7 +133,9 @@ def retrieve_ranked_chunks(query: str, chunks: List[Dict[str, str]], top_k: int)
     vec_by_id = _vector_scores(query, pool) if RETRIEVER_MODE in {"hybrid", "vector"} else {}
     scored: List[Tuple[float, Dict[str, str]]] = []
     for lexical, ch in pool:
-        sem = _semantic_proxy_score(query, str(ch.get("text", "")))
+        text = str(ch.get("text", ""))
+        # 使用缓存的语义分数计算
+        sem = _get_semantic_score(query, text)
         cid = str(ch.get("chunk_id", ""))
         vec = float(vec_by_id.get(cid, 0.0))
         if RETRIEVER_MODE == "vector":

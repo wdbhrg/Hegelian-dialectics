@@ -531,22 +531,42 @@ def _expand_chunk_context(anchor: Dict[str, str], by_doc: Dict[str, Dict[int, Di
     return item
 
 
+# 全局缓存，用于存储by_doc字典
+_BY_DOC_CACHE: Dict[str, Dict[str, Dict[int, Dict[str, str]]]] = {}
+
+
 def search_chunks(query: str, top_k: int = 5) -> List[Dict[str, str]]:
+    """搜索 chunks，带有缓存机制"""
+    global _BY_DOC_CACHE
+    
     index = load_index()
     chunks = index.get("chunks", [])
     if not query.strip():
         return []
+    
+    # 生成缓存键
+    cache_key = str(len(chunks))
+    
+    # 检查缓存
+    if cache_key not in _BY_DOC_CACHE:
+        # 构建by_doc字典
+        by_doc: Dict[str, Dict[int, Dict[str, str]]] = {}
+        for ch in chunks:
+            doc_path = str(ch.get("doc_path", ""))
+            chunk_id = str(ch.get("chunk_id", ""))
+            _, idx = _parse_chunk_order(chunk_id)
+            by_doc.setdefault(doc_path, {})[idx] = ch
+        # 更新缓存
+        _BY_DOC_CACHE = {cache_key: by_doc}
+    
+    # 使用缓存的by_doc字典
+    by_doc = _BY_DOC_CACHE[cache_key]
+    
+    # 检索排名靠前的chunks
     anchors = retrieve_ranked_chunks(query, chunks, top_k=top_k)
     if not anchors:
         return []
 
-    # 4) small-to-big：返回命中块周边上下文
-    by_doc: Dict[str, Dict[int, Dict[str, str]]] = {}
-    for ch in chunks:
-        doc_path = str(ch.get("doc_path", ""))
-        chunk_id = str(ch.get("chunk_id", ""))
-        _, idx = _parse_chunk_order(chunk_id)
-        by_doc.setdefault(doc_path, {})[idx] = ch
-
+    # small-to-big：返回命中块周边上下文
     expanded = [_expand_chunk_context(a, by_doc) for a in anchors]
     return expanded
