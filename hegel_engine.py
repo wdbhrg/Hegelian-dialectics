@@ -14,6 +14,7 @@ import requests
 from env_bootstrap import bootstrap_env
 from knowledge_base import search_chunks
 from telemetry import increment as metric_inc, observe_latency as metric_observe, snapshot as telemetry_snapshot
+from hegel_stages import STAGES, HegelStage
 _log_retrieval_quality = None
 
 bootstrap_env()
